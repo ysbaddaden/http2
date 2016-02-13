@@ -1,0 +1,14 @@
+name: http2
+version: 0.1.0
+
+authors:
+  - Julien Portalier <julien@portalier.com>
+
+description: |
+  HTTP/2 Protocol Implementation
+
+development_dependencies:
+  minitest:
+    github: ysbaddaden/minitest.cr
+
+license: Apache-2.0
