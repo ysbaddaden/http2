@@ -27,15 +27,35 @@ module HTTP2
       end
 
       private getter tree : Node
+      private getter table : Array
 
-      def initialize(table)
+      def initialize(@table)
         @tree = Node.new
 
         table.each do |row|
           value, binary, len = row
           tree.add(binary, len, value)
         end
+      end
 
+      def encode(string : String)
+        bytes = Slice(UInt8).new(string.bytesize)
+        offset = k = 0
+
+        string.each_byte do |chr|
+          _, binary, len = table[chr]
+
+          (len - 1).downto(0) do |i|
+            j = offset % 8
+            k = offset / 8 if j == 0
+            bytes[k] |= 128 >> j if binary.bit(i) == 1
+            offset += 1
+          end
+        end
+
+        count = (offset / 8.0).ceil.to_i
+        bytes[count - 1] |= 0xff >> (offset % 8) unless offset % 8 == 0 # padding
+        bytes[0, count]
       end
 
       def decode(bytes : Slice(UInt8))

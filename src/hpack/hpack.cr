@@ -128,18 +128,19 @@ module HTTP2
     class Encoder
       # TODO: allow per header name/value indexing configuration
       # TODO: allow per header name/value huffman encoding configuration
-      # TODO: huffman encoding
 
       private getter! writer : IO
       getter table : DynamicTable
       property default_indexing : Indexing
+      property default_huffman : Boolean
 
-      def initialize(indexing = Indexing::NONE, max_table_size = 4096)
+      def initialize(indexing = Indexing::NONE, huffman = false, max_table_size = 4096)
         @default_indexing = indexing
+        @default_huffman = huffman
         @table = DynamicTable.new(max_table_size)
       end
 
-      def encode(headers : HTTP::Headers, indexing = default_indexing)
+      def encode(headers : HTTP::Headers, indexing = default_indexing, huffman = default_huffman)
         @writer = MemoryIO.new
 
         headers.each do |name, values|
@@ -149,11 +150,11 @@ module HTTP2
                 integer(header[0], 7, prefix: Indexing::INDEXED)
               elsif indexing == Indexing::ALWAYS
                 integer(header[0], 6, prefix: Indexing::ALWAYS)
-                string(value)
+                string(value, huffman)
                 table.add(name, value)
               else
                 integer(header[0], 4, prefix: Indexing::NONE)
-                string(value)
+                string(value, huffman)
               end
             else
               case indexing
@@ -165,8 +166,8 @@ module HTTP2
               else
                 writer.write_byte(Indexing::NONE.value)
               end
-              string(name)
-              string(value)
+              string(name, huffman)
+              string(value, huffman)
             end
           end
         end
@@ -224,9 +225,9 @@ module HTTP2
 
       protected def string(string : String, huffman = false)
         if huffman
-          raise "HPACK::Encoder doesn't support Huffman encoding"
-          #integer(string.bytesize, 7, prefix: 128)
-          #writer << HPACK.huffman.encode(string)
+          encoded = HPACK.huffman.encode(string)
+          integer(encoded.size, 7, prefix: 128)
+          writer.write(encoded)
         else
           integer(string.bytesize, 7)
           writer << string
