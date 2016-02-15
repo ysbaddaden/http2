@@ -5,6 +5,14 @@ require "./dynamic_table"
 
 module HTTP2
   module HPACK
+    @[Flags]
+    enum Indexing : UInt8
+      INDEXED = 128_u8
+      ALWAYS = 64_u8
+      NEVER = 16_u8
+      NONE = 0_u8
+    end
+
     class Error < Exception
     end
 
@@ -61,16 +69,16 @@ module HTTP2
           elsif reader.current_byte.bit(5) == 1        # 001.....  table max size update
             table.resize(integer(5))
 
-          elsif reader.current_byte.bit(4) == 1        # 0001....  literal without indexing
+          elsif reader.current_byte.bit(4) == 1        # 0001....  literal never indexed
             index = integer(4)
             name = index == 0 ? string : indexed(index).first
             headers.add(name, string)
+            # TODO: retain the never_indexed property
 
-          else                                         # 0000....  literal never indexed
+          else                                         # 0000....  literal without indexing
             index = integer(4)
             name = index == 0 ? string : indexed(index).first
             headers.add(name, string)
-            # TODO: retain the never_indexed property into the header definition
           end
         end
 
@@ -116,27 +124,114 @@ module HTTP2
         end
       end
     end
+
+    class Encoder
+      # TODO: allow per header name/value indexing configuration
+      # TODO: allow per header name/value huffman encoding configuration
+      # TODO: huffman encoding
+
+      private getter! writer : IO
+      getter table : DynamicTable
+      property default_indexing : Indexing
+
+      def initialize(indexing = Indexing::NONE, max_table_size = 4096)
+        @default_indexing = indexing
+        @table = DynamicTable.new(max_table_size)
+      end
+
+      def encode(headers : HTTP::Headers, indexing = default_indexing)
+        @writer = MemoryIO.new
+
+        headers.each do |name, values|
+          values.each do |value|
+            if header = indexed(name, value)
+              if header[1]
+                integer(header[0], 7, prefix: Indexing::INDEXED)
+              elsif indexing == Indexing::ALWAYS
+                integer(header[0], 6, prefix: Indexing::ALWAYS)
+                string(value)
+                table.add(name, value)
+              else
+                integer(header[0], 4, prefix: Indexing::NONE)
+                string(value)
+              end
+            else
+              case indexing
+              when Indexing::ALWAYS
+                table.add(name, value)
+                writer.write_byte(Indexing::ALWAYS.value)
+              when Indexing::NEVER
+                writer.write_byte(Indexing::NEVER.value)
+              else
+                writer.write_byte(Indexing::NONE.value)
+              end
+              string(name)
+              string(value)
+            end
+          end
+        end
+
+        writer.to_slice
+      end
+
+      protected def indexed(name, value)
+        # OPTIMIZE: use a cached { name => { value => index } } struct (?)
+        idx = nil
+
+        STATIC_TABLE.each_with_index do |header, index|
+          if header[0] == name
+            if header[1] == value
+              return {index + 1, value}
+            else
+              idx ||= index + 1
+            end
+          end
+        end
+
+        table.each_with_index do |header, index|
+          if header[0] == name
+            if header[1] == value
+              return {index + STATIC_TABLE_SIZE + 1, value}
+            #else
+            #  idx ||= index + 1
+            end
+          end
+        end
+
+        if idx
+          {idx, nil}
+        end
+      end
+
+      protected def integer(integer : Int32, n, prefix = 0_u8)
+        n2 = 2 ** n - 1
+
+        if integer <= n2
+          writer.write_byte(integer.to_u8 | prefix.to_u8)
+          return
+        end
+
+        writer.write_byte(n2.to_u8 | prefix.to_u8)
+        integer -= n2
+
+        while integer >= 128
+          writer.write_byte(((integer % 128) + 128).to_u8)
+          integer /= 128
+        end
+
+        writer.write_byte(integer.to_u8)
+      end
+
+      protected def string(string : String, huffman = false)
+        if huffman
+          raise "HPACK::Encoder doesn't support Huffman encoding"
+          #integer(string.bytesize, 7, prefix: 128)
+          #writer << HPACK.huffman.encode(string)
+        else
+          integer(string.bytesize, 7)
+          writer << string
+        end
+      end
+    end
   end
-
-  #class Encoder
-  #  def self.encode_integer(integer, n)
-  #    n2 = 2 ** n - 1
-
-  #    if integer <= n2
-  #      return Slice(UInt8).new(1) { integer.to_u8 }
-  #    end
-
-  #    io = MemoryIO.new(3)
-  #    io.write_byte n2.to_u8
-  #    integer -= n2
-
-  #    while integer >= 128
-  #      io.write_byte ((integer % 128) + 128).to_u8
-  #      integer /= 128
-  #    end
-
-  #    io.write_byte integer.to_u8
-  #    io.to_slice
-  #  end
-  #end
 end
