@@ -1,4 +1,4 @@
 .PHONY: test
 
 test:
-	crystal run test/**/*_test.cr -- --verbose
+	crystal run test/*_test.cr test/**/*_test.cr -- --verbose

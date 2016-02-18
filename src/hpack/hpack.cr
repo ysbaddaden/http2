@@ -2,6 +2,7 @@ require "http/headers"
 require "./huffman"
 require "./static_table"
 require "./dynamic_table"
+require "../slice_reader"
 
 module HTTP2
   module HPACK
@@ -14,31 +15,6 @@ module HTTP2
     end
 
     class Error < Exception
-    end
-
-    class SliceReader
-      getter offset : Int32
-      getter bytes : Slice(UInt8)
-
-      def initialize(@bytes : Slice(UInt8))
-        @offset = 0
-      end
-
-      def done?
-        offset >= bytes.size
-      end
-
-      def current_byte
-        bytes[offset]
-      end
-
-      def read_byte
-        current_byte.tap { @offset += 1 }
-      end
-
-      def read(count)
-        bytes[offset, count].tap { @offset += count }
-      end
     end
 
     class Decoder
