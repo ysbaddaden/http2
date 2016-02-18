@@ -2,9 +2,9 @@ module HTTP2
   module HPACK
     class Huffman
       class Node
-        property left : Node # bit 0
-        property right : Node # bit 1
-        property value : UInt8
+        property left : Node? # bit 0
+        property right : Node? # bit 1
+        property value : UInt8?
 
         def leaf?
           left.nil? && right.nil?
@@ -27,7 +27,7 @@ module HTTP2
       end
 
       private getter tree : Node
-      private getter table : Array
+      private getter table : Array(Tuple(UInt8, Int32, Int32))
 
       def initialize(@table)
         @tree = Node.new

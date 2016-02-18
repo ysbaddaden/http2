@@ -129,10 +129,10 @@ module HTTP2
       # TODO: allow per header name/value indexing configuration
       # TODO: allow per header name/value huffman encoding configuration
 
-      private getter! writer : IO
+      private getter! writer : MemoryIO
       getter table : DynamicTable
       property default_indexing : Indexing
-      property default_huffman : Boolean
+      property default_huffman : Bool
 
       def initialize(indexing = Indexing::NONE, huffman = false, max_table_size = 4096)
         @default_indexing = indexing
