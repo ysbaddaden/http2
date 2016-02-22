@@ -62,23 +62,29 @@ module HTTP2
 
     def send_headers(headers, flags = 0)
       payload = connection.hpack_encoder.encode(headers)
-      frame = Frame.new(Frame::Type::HEADERS, self, Frame::Flags.new(flags.to_u8))
+      flag = Frame::Flags.new(flags.to_u8)
       max_frame_size = connection.remote_settings.max_frame_size
 
       if payload.size <= max_frame_size
-        frame.flags |= Frame::Flags::END_HEADERS
-        frame.payload = payload
+        flag |= flag | Frame::Flags::END_HEADERS
+        frame = Frame.new(Frame::Type::HEADERS, self, flag, payload)
         connection.send(frame)
       else
+        num = (payload.size / max_frame_size.to_f).ceil.to_i
+        count = max_frame_size
         offset = 0
-        while offset < payload.size
-          count = offset + max_frame_size > payload.size ? payload.size : max_frame_size
-          frame.type = Frame::Type::CONTINUATION if offset > 0
-          frame.flags = Frame::Flags::END_HEADERS if count != max_frame_size
-          frame.payload = payload[offset, count]
-          connection.send(frame)
-          offset += count
+
+        frames = num.times.map do |index|
+          type = index == 0 ? Frame::Type::HEADERS : Frame::Type::CONTINUATION
+          offset = index * max_frame_size
+          if index == num
+            count = payload.size - offset
+            flag |= Frame::Flags::END_HEADERS
+          end
+          Frame.new(type, self, flag, payload[offset, count])
         end
+
+        connection.send(frames.to_a)
       end
       nil
     end
@@ -101,6 +107,10 @@ module HTTP2
           frame.payload = data[offset, count]
           connection.send(frame)
           offset += count
+
+          # OPTIMIZE: maybe we should sleep(0) here, in order to give other
+          # coroutines a chance to send frames? so we can take advantage of
+          # HTTP2 multiplexing? or maybe the Channel and IO are enough?
         end
       end
       nil

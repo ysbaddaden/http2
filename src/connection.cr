@@ -23,22 +23,29 @@ module HTTP2
       @remote_settings = Settings.new
       @streams = {} of Int32 => Stream
       @closed = false
-      @channel = Channel::Buffered(Frame?).new
+      @channel = Channel::Buffered(Frame | Array(Frame) | Nil).new
 
-      spawn do
-        loop do
-          begin
-            # OPTIMIZE: follow stream priority to send frames
-            if frame = @channel.receive
-              write(frame)
+      spawn frame_writer
+    end
+
+    private def frame_writer
+      loop do
+        begin
+          # OPTIMIZE: follow stream priority to send frames
+          if frame = @channel.receive
+            case frame
+            when Array
+              frame.each { |f| write(f) }
             else
-              break
+              write(frame)
             end
-          rescue Channel::ClosedError
+          else
             break
-          rescue ex
-            puts "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join(", ")}"
           end
+        rescue Channel::ClosedError
+          break
+        rescue ex
+          puts "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join(", ")}"
         end
       end
     end
@@ -192,6 +199,7 @@ module HTTP2
         raise Error.protocol_error("EXPECTED continuation frame") unless frame = read_frame
         raise Error.protocol_error("EXPECTED continuation frame") unless frame.type == Frame::Type::CONTINUATION
         raise Error.protocol_error("EXPECTED continuation frame") unless frame.stream == frame.stream
+        # FIXME: raise if the payload grows too big
 
         ptr = ptr.realloc(len + frame.size)
         io.read_fully(Slice(UInt8).new(ptr + len, frame.size))
@@ -203,7 +211,15 @@ module HTTP2
       ptr.to_slice(len)
     end
 
-    def send(frame : Frame)
+    # Sends a frame to the connected peer.
+    #
+    # One may also send an Array(Frame) for the case when some frames must be
+    # sliced (in order to respect max frame size) but must be sent as a single
+    # block (multiplexing would cause a protocol error). So far this only
+    # applies to HEADERS and CONTINUATION frames, otherwise HPACK compression
+    # synchronisation could end up corrupted if another HEADERS frame for
+    # another stream was sent in between.
+    def send(frame : Frame | Array(Frame))
       @channel.send(frame)
     end
 
