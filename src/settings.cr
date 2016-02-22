@@ -16,8 +16,14 @@ module HTTP2
     setter header_table_size
     property max_concurrent_streams
     setter initial_window_size
-    #setter max_frame_size
     property max_header_list_size
+
+    @header_table_size : Int32?
+    @enable_push : Bool?
+    @max_concurrent_streams : Int32?
+    @initial_window_size : Int32?
+    @max_frame_size : Int32?
+    @max_header_list_size : Int32?
 
     def initialize(@header_table_size = nil,
                    @enable_push = nil,
@@ -28,11 +34,11 @@ module HTTP2
     end
 
     def header_table_size
-      @header_table_size || 4096
+      @header_table_size || DEFAULT_HEADER_TABLE_SIZE
     end
 
     def enable_push
-      @enable_push || true
+      @enable_push || DEFAULT_ENABLE_PUSH
     end
 
     def enable_push=(value : Int)
@@ -44,20 +50,20 @@ module HTTP2
     end
 
     def initial_window_size
-      @initial_window_size || 65535
+      @initial_window_size || DEFAULT_INITIAL_WINDOW_SIZE
     end
 
     def initial_window_size=(size)
-      raise Error.flow_control_error if size < MINIMUM_FRAME_SIZE || size > MAXIMUM_FRAME_SIZE
+      raise Error.flow_control_error unless MINIMUM_WINDOW_SIZE < size < MAXIMUM_WINDOW_SIZE
       @initial_window_size = size
     end
 
     def max_frame_size
-      @max_frame_size || 16384
+      @max_frame_size || DEFAULT_MAX_FRAME_SIZE
     end
 
     def max_frame_size=(size)
-      raise Error.protocol_error if size < MINIMUM_FRAME_SIZE || size > MAXIMUM_FRAME_SIZE
+      raise Error.protocol_error unless MINIMUM_FRAME_SIZE < size < MAXIMUM_FRAME_SIZE
       @max_frame_size = size
     end
 

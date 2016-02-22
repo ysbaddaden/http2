@@ -13,7 +13,13 @@ module HTTP2
     end
 
     def handle_connection(socket)
+      # TODO: handle HTTP/1 requests
+      # TODO: handle HTTP/1 to HTTP/2 upgrade requests
+      # TODO: handle HTTP/2 TLS negotiation (through ALPN; requires OpenSSL 1.0.2f)
+
       connection = Connection.new(socket)
+      puts "Connected"
+
       connection.read_client_preface
       connection.write_settings
 
@@ -27,18 +33,16 @@ module HTTP2
         when Frame::Type::SETTINGS
           unless frame.flags.ack?
             # TODO: validate new settings
-            connection.write Frame.new(Frame::Type::SETTINGS, frame.stream_id, 0x1)
+            connection.write Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
           end
 
         when Frame::Type::HEADERS
-          # OPTIMIZE: have connection decode the headers
-          headers = connection.hpack_decoder.decode(frame.payload)
+          headers = frame.stream.headers
           method, path = headers[":method"], headers[":path"]
           request = HTTP::Request.new(method, path, headers: headers, version: "HTTP/2.0")
 
-          # FIXME: don't dispatch request until END_HEADERS flag is set!
           # TODO: spawn (requires to write frames through a channel)
-          handle_request(connection, frame.stream_id, request)
+          spawn handle_request(connection, frame.stream, request)
 
         when Frame::Type::GOAWAY
           break
@@ -61,25 +65,36 @@ module HTTP2
       if connection
         connection.close unless connection.closed?
       end
+      puts "Disconnected"
     end
 
-    def handle_request(connection, stream_id, request)
-      puts "stream_id=#{stream_id}: #{request.method} #{request.resource} #{request.headers}"
+    def handle_request(connection, stream, request)
+      puts "; Handle request"
+      request.headers.each do |key, value|
+        puts "  #{key.colorize(:light_blue)}: #{value.join(", ")}"
+      end
+
+      if %w(POST PATCH PUT).includes?(request.method)
+        while line = stream.data.gets
+          puts "data: #{line.inspect}"
+        end
+      end
 
       headers = HTTP::Headers{
         ":status" => "200",
         "content-type" => "text/plain",
         "server" => "h2/0.1.0"
       }
-      connection.write Frame.new(Frame::Type::HEADERS,
-                                 stream_id,
-                                 Frame::Flags::END_HEADERS,
-                                 connection.hpack_encoder.encode(headers))
 
-      connection.write Frame.new(Frame::Type::DATA,
-                                 stream_id,
-                                 Frame::Flags::END_STREAM,
-                                 "OK".to_slice)
+      if request.method == "HEAD"
+        stream.send_headers(headers, Frame::Flags::END_STREAM)
+      else
+        stream.send_headers(headers)
+        stream.send_data("OK")
+        stream.send_data("", Frame::Flags::END_STREAM)
+      end
+    ensure
+      stream.data.close
     end
   end
 end

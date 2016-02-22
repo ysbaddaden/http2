@@ -3,12 +3,12 @@ require "./errors"
 require "./frame"
 require "./hpack"
 require "./settings"
+require "./stream"
+require "colorize"
 
 module HTTP2
   DEFAULT_SETTINGS = Settings.new(
-    #header_table_size: 0,
     max_concurrent_streams: 100,
-    #initial_window_size: 65535,
     max_header_list_size: 16384,
   )
 
@@ -16,15 +16,31 @@ module HTTP2
     property local_settings : Settings
     property remote_settings : Settings
     private getter io : IO::FileDescriptor
-    private getter streams : Hash(Int32, Priority)
-
-    record Priority, exclusive, stream_id, weight
+    private getter streams : Hash(Int32, Stream)
 
     def initialize(@io)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
-      @streams = {} of Int32 => Priority
+      @streams = {} of Int32 => Stream
       @closed = false
+      @channel = Channel::Buffered(Frame?).new
+
+      spawn do
+        loop do
+          begin
+            # OPTIMIZE: follow stream priority to send frames
+            if frame = @channel.receive
+              write(frame)
+            else
+              break
+            end
+          rescue Channel::ClosedError
+            break
+          rescue ex
+            puts "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join(", ")}"
+          end
+        end
+      end
     end
 
     def hpack_encoder
@@ -35,87 +51,77 @@ module HTTP2
     end
 
     def hpack_decoder
-      @hpack_decoder = HPACK::Decoder.new(
+      @hpack_decoder ||= HPACK::Decoder.new(
         max_table_size: remote_settings.header_table_size)
+    end
+
+    def find_stream(id)
+      streams[id]
+    end
+
+    private def find_or_create_stream(id)
+      streams[id] ||= Stream.new(self, id)
     end
 
     def read_client_preface
       io.read_fully(buf = Slice(UInt8).new(24))
-      raise Error.protocol_error("PREFACE expected") unless String.new(buf) == CLIENT_PREFACE
-    end
-
-    private def padded(frame, length)
-      if frame.flags.padded?
-        pad_length = read_byte
-        length -= 1 + pad_length
-      end
-
-      yield length
-
-      if pad_length
-        io.skip(pad_length)
+      unless String.new(buf) == CLIENT_PREFACE
+        raise Error.protocol_error("PREFACE expected")
       end
     end
 
     def receive
-      length, type, flags, _, stream_id = read_frame_headers
-      unless type
-        io.skip(length)
-        return
-      end
+      return unless frame = read_frame
+      stream = frame.stream
+      stream.receiving(frame)
 
-      frame = Frame.new(type, stream_id, flags)
-
-      case type
+      case frame.type
       when Frame::Type::DATA
-        padded(frame, length) do |len|
-          io.read(frame.payload = Slice(UInt8).new(len))
+        read_padded(frame) do |len|
+          io.read_fully(buf = Slice(UInt8).new(len))
+          stream.data.write(buf)
+          stream.data.close_write if frame.flags.end_stream?
         end
 
       when Frame::Type::HEADERS, Frame::Type::PUSH_PROMISE
-        padded(frame, length) do |len|
+        read_padded(frame) do |len|
           if frame.flags.priority?
-            # TODO: open stream
             exclusive, dep_stream_id = read_stream_id
             weight = read_byte.to_i32 + 1
-            streams[frame.stream_id] = Priority.new(exclusive, dep_stream_id, weight)
+            stream.priority = Priority.new(exclusive, dep_stream_id, weight)
             len -= 5
           end
 
-          # FIXME: decoding headers is order dependent!
-          # OPTIMIZE: decode HPACK directly from IO
-          io.read_fully(frame.payload = Slice(UInt8).new(len))
-
-          #if frame.type == Frame::Type::SETTINGS && frame.flags.end_stream?
-          #  TODO: half-close stream (remote)
-          #end
+          io.read_fully(buf = Slice(UInt8).new(len))
+          buf = read_headers_payload(buf.to_unsafe, len) unless frame.flags.end_headers?
+          hpack_decoder.decode(buf, stream.headers)
         end
 
-      #when Frame::Type::PRIORITY
-      #  TODO: open stream
-      #  streams[frame.stream_id] = Priority.new(*read_stream_id, read_byte.to_i32 + 1)
+      when Frame::Type::PRIORITY
+        exclusive, dep_stream_id = read_stream_id
+        weight = read_byte.to_i32 + 1
+        stream.priority = Priority.new(exclusive, dep_stream_id, weight)
 
-      #when Frame::Type::RST_STREAM
-      #  raise Error.protocol_error if frame.stream_id == 0
-      #  raise Error.frame_size_error unless length == RST_STREAM_FRAME_SIZE
-      #  error_code = Error::Code.new(read_byte)
-      #  TODO: close stream
+      when Frame::Type::RST_STREAM
+        raise Error.protocol_error if stream.id == 0
+        raise Error.frame_size_error unless frame.size == RST_STREAM_FRAME_SIZE
+        error_code = Error::Code.new(read_byte.to_u32)
 
       when Frame::Type::SETTINGS
-        raise Error.protocol_error unless frame.stream_id == 0
-        raise Error.frame_size_error unless length % 6 == 0
-        remote_settings.parse(io, length / 6)
+        raise Error.protocol_error unless stream.id == 0
+        raise Error.frame_size_error unless frame.size % 6 == 0
+        remote_settings.parse(io, frame.size / 6)
 
       when Frame::Type::PING
-        raise Error.protocol_error unless frame.stream_id == 0
-        raise Error.frame_size_error unless length == PING_FRAME_SIZE
-        io.read_fully(buf = Slice(UInt8).new(length))
-        write Frame.new(Frame::Type::PING, 0, 1, buf) unless frame.flags.ack?
+        raise Error.protocol_error unless stream.id == 0
+        raise Error.frame_size_error unless frame.size == PING_FRAME_SIZE
+        io.read_fully(buf = Slice(UInt8).new(frame.size))
+        write Frame.new(Frame::Type::PING, find_or_create_stream(0), 1, buf) unless frame.flags.ack?
 
       when Frame::Type::GOAWAY
         _, last_stream_id = read_stream_id
         error_code = Error::Code.from_value(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
-        io.read_fully(buf = Slice(UInt8).new(length - 8))
+        io.read_fully(buf = Slice(UInt8).new(frame.size - 8))
         error_message = String.new(buf)
 
         close(notify: false)
@@ -125,32 +131,96 @@ module HTTP2
         end
 
       #when Frame::Type::WINDOW_UPDATE
-      #  raise Error.frame_size_error unless length == WINDOW_UPDATE_FRAME_SIZE
-      #  ...
+      #  raise Error.frame_size_error unless frame.size == WINDOW_UPDATE_FRAME_SIZE
+      #  buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+      #  #reserved = buf.bit(31)
+      #  window_size_increment = (buf & 0x7fffffff_u32).to_i32
+      #  raise Error.protocol_error unless MINIMUM_WINDOW_SIZE < window_size_increment < MAXIMUM_WINDOW_SIZE
 
-      #when Frame::Type::CONTINUATION
-      #  TODO: continue to decode request headers
-      #  ...
+      #  if stream.id == 0
+      #    @window_size = window_size_increment
+      #  else
+      #    stream.window_size = window_size_increment
+      #  end
+
+      when Frame::Type::CONTINUATION
+        Error.protocol_error("UNEXPECTED continuation frame")
 
       else
-        io.skip(length)
+        io.skip(frame.size)
       end
 
-      puts "<= #{ frame.inspect }"
       frame
     end
 
-    def write_settings
-      write HTTP2::Frame.new(HTTP2::Frame::Type::SETTINGS, 0, 0, local_settings.to_payload)
+    private def read_padded(frame)
+      size = frame.size
+
+      if frame.flags.padded?
+        pad_size = read_byte
+        size -= 1 + pad_size
+      end
+
+      yield size
+
+      if pad_size
+        io.skip(pad_size)
+      end
     end
 
-    def write(frame : Frame)
-      puts "=> #{ frame.inspect }"
+    private def read_frame
+      buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+      size, type = buf >> 8, buf & 0xff
+      flags = read_byte
+      _, stream_id = read_stream_id
 
-      length = frame.payload?.try(&.size.to_u32) || 0_u32
-      io.write_bytes((length << 8) | frame.type.to_u8, IO::ByteFormat::BigEndian)
+      unless frame_type = Frame::Type.from_value?(type)
+        puts "UNSUPPORTED FRAME 0x#{type.to_s(16)}"
+        io.skip(size)
+        return
+      end
+
+      stream = find_or_create_stream(stream_id)
+      frame = Frame.new(frame_type, stream, flags, size: size)
+      puts "recv #{frame.debug(color: :light_cyan)}"
+
+      frame
+    end
+
+    private def read_headers_payload(ptr : UInt8*, len)
+      loop do
+        raise Error.protocol_error("EXPECTED continuation frame") unless frame = read_frame
+        raise Error.protocol_error("EXPECTED continuation frame") unless frame.type == Frame::Type::CONTINUATION
+        raise Error.protocol_error("EXPECTED continuation frame") unless frame.stream == frame.stream
+
+        ptr = ptr.realloc(len + frame.size)
+        io.read_fully(Slice(UInt8).new(ptr + len, frame.size))
+        len += frame.size
+
+        break if frame.flags.end_headers?
+      end
+
+      ptr.to_slice(len)
+    end
+
+    def send(frame : Frame)
+      @channel.send(frame)
+    end
+
+    def write_settings
+      write Frame.new(HTTP2::Frame::Type::SETTINGS, find_or_create_stream(0), 0, local_settings.to_payload)
+    end
+
+    protected def write(frame : Frame)
+      size = frame.payload?.try(&.size.to_u32) || 0_u32
+      stream = frame.stream
+
+      puts "send #{frame.debug(color: :light_magenta)}"
+      stream.sending(frame)
+
+      io.write_bytes((size << 8) | frame.type.to_u8, IO::ByteFormat::BigEndian)
       io.write_byte(frame.flags.to_u8)
-      io.write_bytes(frame.stream_id.to_u32, IO::ByteFormat::BigEndian)
+      io.write_bytes(stream.id.to_u32, IO::ByteFormat::BigEndian)
 
       if payload = frame.payload?
         io.write(payload) if payload.size > 0
@@ -164,18 +234,22 @@ module HTTP2
       unless io.closed?
         if notify
           if error
-            payload = MemoryIO.new(8 + error.message.bytesize)
-            payload.write_bytes(last_stream_id.to_u32, IO::ByteFormat::BigEndian)
-            payload.write_bytes(error.code.to_u32, IO::ByteFormat::BigEndian)
-            payload << error.message
+            message, code = error.message, error.code
           else
-            payload = MemoryIO.new(8)
-            payload.write_bytes(last_stream_id.to_u32, IO::ByteFormat::BigEndian)
-            payload.write_bytes(Error::Code::NO_ERROR.to_u32, IO::ByteFormat::BigEndian)
+            message, code = "", Error::Code::NO_ERROR
           end
-          write Frame.new(Frame::Type::GOAWAY, 0, 0, payload.to_slice)
+          payload = MemoryIO.new(8 + message.bytesize)
+          payload.write_bytes(last_stream_id.to_u32, IO::ByteFormat::BigEndian)
+          payload.write_bytes(code.to_u32, IO::ByteFormat::BigEndian)
+          payload << message
+          write Frame.new(Frame::Type::GOAWAY, find_or_create_stream(0), 0, payload.to_slice)
         end
         io.close
+      end
+
+      unless @channel.closed?
+        @channel.send(nil)
+        @channel.close
       end
     end
 
@@ -185,19 +259,6 @@ module HTTP2
 
     private def read_byte
       io.read_byte.not_nil!
-    end
-
-    private def read_frame_headers
-      buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
-      length, type = buf >> 8, buf & 0xff
-      flags = read_byte
-      r, stream_id = read_stream_id
-
-      unless frame_type = Frame::Type.from_value?(type)
-        puts "UNSUPPORTED FRAME 0x#{type.to_s(16)}"
-      end
-
-      {length, frame_type, flags, r, stream_id}
     end
 
     private def read_stream_id

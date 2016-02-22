@@ -22,7 +22,7 @@ module HTTP2
       PRIORITY = 0x20_u8
 
       def ack?
-        end_headers?
+        end_stream?
       end
 
       def inspect(io)
@@ -30,6 +30,11 @@ module HTTP2
       end
 
       def to_s(io)
+        if value == 0
+          io << "NONE"
+          return
+        end
+
         i = 0
         {% for name in @type.constants %}
           {% unless name.stringify == "None" || name.stringify == "All" %}
@@ -44,16 +49,22 @@ module HTTP2
     end
 
     property type : Type
-    property stream_id : Int32
+    getter stream : Stream
     property flags : Flags
     property! payload : Slice(UInt8)
 
-    def initialize(@type, @stream_id = 0, flags = 0_u8, @payload = nil)
+    def initialize(@type, @stream : Stream, flags = 0_u8, @payload = nil, @size = nil)
       @flags = Flags.new(flags.to_u8)
     end
 
-    def inspect(io : IO)
-      io << "#{type} frame <stream_id=#{stream_id} flags=#{flags}>"
+    def size
+      @size || payload?.try(&.size) || 0
+    end
+
+    def debug(color = nil)
+      flags = (type == Type::SETTINGS || type == Type::PING) && @flags.value == 1 ? "ACK" : @flags
+      type = if color; @type.colorize(color); else; @type; end
+      "#{type} frame <length=#{size}, flags=#{flags}, stream_id=#{stream.id}>"
     end
   end
 end

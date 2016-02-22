@@ -27,7 +27,7 @@ module HTTP2
 
     {% for code in Code.constants %}
       def self.{{ code.downcase }}(message = "")
-        new Code::{{ code.id }}, message
+        new Code::{{ code.id }}, 0, message
       end
     {% end %}
   end
