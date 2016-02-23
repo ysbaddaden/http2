@@ -119,37 +119,38 @@ module HTTP2
       end
 
       def encode(headers : HTTP::Headers, indexing = default_indexing, huffman = default_huffman, @writer = MemoryIO.new)
+        headers.each { |name, values| encode(name, values, indexing, huffman) if name.starts_with?(':') }
+        headers.each { |name, values| encode(name, values, indexing, huffman) unless name.starts_with?(':') }
+        writer.to_slice
+      end
 
-        headers.each do |name, values|
-          values.each do |value|
-            if header = indexed(name, value)
-              if header[1]
-                integer(header[0], 7, prefix: Indexing::INDEXED)
-              elsif indexing == Indexing::ALWAYS
-                integer(header[0], 6, prefix: Indexing::ALWAYS)
-                string(value, huffman)
-                table.add(name, value)
-              else
-                integer(header[0], 4, prefix: Indexing::NONE)
-                string(value, huffman)
-              end
+      def encode(name, values, indexing, huffman)
+        values.each do |value|
+          if header = indexed(name, value)
+            if header[1]
+              integer(header[0], 7, prefix: Indexing::INDEXED)
+            elsif indexing == Indexing::ALWAYS
+              integer(header[0], 6, prefix: Indexing::ALWAYS)
+              string(value, huffman)
+              table.add(name, value)
             else
-              case indexing
-              when Indexing::ALWAYS
-                table.add(name, value)
-                writer.write_byte(Indexing::ALWAYS.value)
-              when Indexing::NEVER
-                writer.write_byte(Indexing::NEVER.value)
-              else
-                writer.write_byte(Indexing::NONE.value)
-              end
-              string(name, huffman)
+              integer(header[0], 4, prefix: Indexing::NONE)
               string(value, huffman)
             end
+          else
+            case indexing
+            when Indexing::ALWAYS
+              table.add(name, value)
+              writer.write_byte(Indexing::ALWAYS.value)
+            when Indexing::NEVER
+              writer.write_byte(Indexing::NEVER.value)
+            else
+              writer.write_byte(Indexing::NONE.value)
+            end
+            string(name, huffman)
+            string(value, huffman)
           end
         end
-
-        writer.to_slice
       end
 
       protected def indexed(name, value)

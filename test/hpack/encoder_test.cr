@@ -43,6 +43,18 @@ module HTTP2::HPACK
       assert_empty e.table
     end
 
+    def test_always_encodes_special_headers_first
+      e = Encoder.new(indexing: Indexing::ALWAYS, huffman: false)
+      headers = HTTP::Headers{
+        "cache-control" => "private",
+        ":status" => "302",
+      }
+      assert_equal slice(
+        0x48, 0x03, 0x33, 0x30, 0x32,
+        0x58, 0x07, 0x70, 0x72, 0x69, 0x76, 0x61, 0x74, 0x65,
+      ), e.encode(headers)
+    end
+
     # http://tools.ietf.org/html/rfc7541#appendix-C.5
     def test_responses_without_huffman_encoding
       e = Encoder.new(max_table_size: 256, indexing: Indexing::ALWAYS, huffman: false)
