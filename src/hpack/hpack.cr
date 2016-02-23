@@ -118,8 +118,7 @@ module HTTP2
         @table = DynamicTable.new(max_table_size)
       end
 
-      def encode(headers : HTTP::Headers, indexing = default_indexing, huffman = default_huffman)
-        @writer = MemoryIO.new
+      def encode(headers : HTTP::Headers, indexing = default_indexing, huffman = default_huffman, @writer = MemoryIO.new)
 
         headers.each do |name, values|
           values.each do |value|

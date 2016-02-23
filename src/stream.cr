@@ -2,7 +2,14 @@ require "http/headers"
 require "./data"
 
 module HTTP2
-  record Priority, exclusive, stream_id, weight
+  class Priority
+    property exclusive : Bool
+    property dep_stream_id : Int32
+    property weight : Int32
+
+    def initialize(@exclusive, @dep_stream_id, @weight)
+    end
+  end
 
   DEFAULT_PRIORITY = Priority.new(false, 0, 16)
 
@@ -19,7 +26,7 @@ module HTTP2
       def to_s(io)
         case self
         when IDLE
-          io << "closed"
+          io << "idle"
         when RESERVED_LOCAL
           io << "reserved (local)"
         when RESERVED_REMOTE
@@ -60,14 +67,38 @@ module HTTP2
       false
     end
 
+    def send_priority
+      io = MemoryIO.new
+      exclusive = priority.exclusive ? 0x80000000_u32 : 0_u32
+      dep_stream_id = priority.dep_stream_id.to_u32 & 0x7fffffff_u32
+      io.write_bytes(exclusive | dep_stream_id, IO::ByteFormat::BigEndian)
+      io.write_byte((priority.weight - 1).to_u8)
+      io.rewind
+      connection.send Frame.new(Frame::Type::PRIORITY, self, 0, io.to_slice)
+    end
+
     def send_headers(headers, flags = 0)
       payload = connection.hpack_encoder.encode(headers)
-      flag = Frame::Flags.new(flags.to_u8)
+      send_headers(Frame::Type::HEADERS, headers, Frame::Flags.new(flags.to_u8), payload)
+    end
+
+    def send_push_promise(headers, flags = 0)
+      return unless connection.remote_settings.enable_push
+
+      connection.create_stream(state: Stream::State::RESERVED_LOCAL).tap do |stream|
+        io = MemoryIO.new
+        io.write_bytes(stream.id.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)
+        payload = connection.hpack_encoder.encode(headers, writer: io)
+        send_headers(Frame::Type::PUSH_PROMISE, headers, Frame::Flags.new(flags.to_u8), payload)
+      end
+    end
+
+    protected def send_headers(type : Frame::Type, headers, flags, payload)
       max_frame_size = connection.remote_settings.max_frame_size
 
       if payload.size <= max_frame_size
-        flag |= flag | Frame::Flags::END_HEADERS
-        frame = Frame.new(Frame::Type::HEADERS, self, flag, payload)
+        flags |= flags | Frame::Flags::END_HEADERS
+        frame = Frame.new(type, self, flags, payload)
         connection.send(frame)
       else
         num = (payload.size / max_frame_size.to_f).ceil.to_i
@@ -75,13 +106,13 @@ module HTTP2
         offset = 0
 
         frames = num.times.map do |index|
-          type = index == 0 ? Frame::Type::HEADERS : Frame::Type::CONTINUATION
+          type = Frame::Type::CONTINUATION if index > 1
           offset = index * max_frame_size
           if index == num
             count = payload.size - offset
-            flag |= Frame::Flags::END_HEADERS
+            flags |= Frame::Flags::END_HEADERS
           end
-          Frame.new(type, self, flag, payload[offset, count])
+          Frame.new(type, self, flags, payload[offset, count])
         end
 
         connection.send(frames.to_a)

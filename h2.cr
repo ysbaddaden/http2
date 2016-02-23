@@ -80,6 +80,14 @@ module HTTP2
         end
       end
 
+      push = stream.send_push_promise(HTTP::Headers{
+        ":method" => "GET",
+        ":path" => "/javascripts/application.js",
+        ":authority" => request.headers[":authority"],
+        ":scheme" => request.headers[":scheme"],
+        "content-type" => "application/javascript",
+      })
+
       headers = HTTP::Headers{
         ":status" => "200",
         "content-type" => "text/plain",
@@ -93,6 +101,15 @@ module HTTP2
         stream.send_data("OK")
         stream.send_data("", Frame::Flags::END_STREAM)
       end
+
+      if push && push.try(&.state) != Stream::State::CLOSED
+        push.send_headers(HTTP::Headers{
+           ":status" => "200",
+           "content-type" => "application/javascript",
+        })
+        push.send_data("(function () {}());", Frame::Flags::END_STREAM)
+      end
+
     ensure
       stream.data.close
     end

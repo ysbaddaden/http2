@@ -22,6 +22,7 @@ module HTTP2
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
       @streams = {} of Int32 => Stream
+      @stream_id_counter = 0
       @closed = false
       @channel = Channel::Buffered(Frame | Array(Frame) | Nil).new
 
@@ -62,12 +63,15 @@ module HTTP2
         max_table_size: remote_settings.header_table_size)
     end
 
-    def find_stream(id)
-      streams[id]
+    protected def find_or_create_stream(id)
+      streams[id] ||= Stream.new(self, id)
     end
 
-    private def find_or_create_stream(id)
-      streams[id] ||= Stream.new(self, id)
+    protected def create_stream(state = Stream::State::IDLE)
+      # TODO: verify that streams are within max_concurrent_streams setting
+      # FIXME: not thread safe
+      id = @stream_id_counter += 2
+      streams[id] = Stream.new(self, id, state: state)
     end
 
     def read_client_preface
@@ -80,7 +84,7 @@ module HTTP2
     def receive
       return unless frame = read_frame
       stream = frame.stream
-      stream.receiving(frame)
+      stream.receiving(frame) unless frame.type == Frame::Type::PUSH_PROMISE
 
       case frame.type
       when Frame::Type::DATA
@@ -90,12 +94,12 @@ module HTTP2
           stream.data.close_write if frame.flags.end_stream?
         end
 
-      when Frame::Type::HEADERS, Frame::Type::PUSH_PROMISE
+      when Frame::Type::HEADERS
         read_padded(frame) do |len|
           if frame.flags.priority?
             exclusive, dep_stream_id = read_stream_id
             weight = read_byte.to_i32 + 1
-            stream.priority = Priority.new(exclusive, dep_stream_id, weight)
+            stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
             len -= 5
           end
 
@@ -104,10 +108,21 @@ module HTTP2
           hpack_decoder.decode(buf, stream.headers)
         end
 
+      when Frame::Type::PUSH_PROMISE
+        read_padded(frame) do |len|
+          _, promised_stream_id = read_stream_id
+          find_or_create_stream(promised_stream_id).receiving(frame)
+
+          len -= 4
+          io.read_fully(buf = Slice(UInt8).new(len))
+          buf = read_headers_payload(buf.to_unsafe, len) unless frame.flags.end_headers?
+          hpack_decoder.decode(buf, stream.headers)
+        end
+
       when Frame::Type::PRIORITY
         exclusive, dep_stream_id = read_stream_id
         weight = read_byte.to_i32 + 1
-        stream.priority = Priority.new(exclusive, dep_stream_id, weight)
+        stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
 
       when Frame::Type::RST_STREAM
         raise Error.protocol_error if stream.id == 0
@@ -232,7 +247,7 @@ module HTTP2
       stream = frame.stream
 
       puts "send #{frame.debug(color: :light_magenta)}"
-      stream.sending(frame)
+      stream.sending(frame) unless frame.type == Frame::Type::PUSH_PROMISE
 
       io.write_bytes((size << 8) | frame.type.to_u8, IO::ByteFormat::BigEndian)
       io.write_byte(frame.flags.to_u8)
