@@ -33,6 +33,7 @@ module HTTP2
       loop do
         begin
           # OPTIMIZE: follow stream priority to send frames
+          # TODO: respect flow-control (don't push DATA frames until window size is sufficient).
           if frame = @channel.receive
             case frame
             when Array
@@ -64,20 +65,26 @@ module HTTP2
     end
 
     protected def find_or_create_stream(id)
+      # FIXME: thread safety
+      # TODO: verify that streams are within max_concurrent_streams setting
       streams[id] ||= Stream.new(self, id)
     end
 
     protected def create_stream(state = Stream::State::IDLE)
+      # FIXME: thread safety
       # TODO: verify that streams are within max_concurrent_streams setting
-      # FIXME: not thread safe
       id = @stream_id_counter += 2
+      raise Error.internal_error("STREAM #{id} already exists") if streams[id]?
       streams[id] = Stream.new(self, id, state: state)
     end
 
-    def read_client_preface
-      io.read_fully(buf = Slice(UInt8).new(24))
-      unless String.new(buf) == CLIENT_PREFACE
-        raise Error.protocol_error("PREFACE expected")
+    def read_client_preface(truncated = false)
+      if truncated
+        io.read_fully(buf = Slice(UInt8).new(8))
+        raise Error.protocol_error("PREFACE expected") unless String.new(buf) == CLIENT_PREFACE[-8, 8]
+      else
+        io.read_fully(buf = Slice(UInt8).new(24))
+        raise Error.protocol_error("PREFACE expected") unless String.new(buf) == CLIENT_PREFACE
       end
     end
 
@@ -132,7 +139,10 @@ module HTTP2
       when Frame::Type::SETTINGS
         raise Error.protocol_error unless stream.id == 0
         raise Error.frame_size_error unless frame.size % 6 == 0
-        remote_settings.parse(io, frame.size / 6)
+        unless frame.flags.ack?
+          remote_settings.parse(io, frame.size / 6)
+          write Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
+        end
 
       when Frame::Type::PING
         raise Error.protocol_error unless stream.id == 0
