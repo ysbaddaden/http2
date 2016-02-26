@@ -167,7 +167,7 @@ module HTTP2
       #  buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
       #  #reserved = buf.bit(31)
       #  window_size_increment = (buf & 0x7fffffff_u32).to_i32
-      #  raise Error.protocol_error unless MINIMUM_WINDOW_SIZE < window_size_increment < MAXIMUM_WINDOW_SIZE
+      #  raise Error.protocol_error unless MINIMUM_WINDOW_SIZE <= window_size_increment < MAXIMUM_WINDOW_SIZE
 
       #  if stream.id == 0
       #    @window_size = window_size_increment
