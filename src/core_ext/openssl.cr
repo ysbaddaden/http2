@@ -61,7 +61,8 @@ module OpenSSL
             LibSSL::SSL_TLSEXT_ERR_OK
           end
         }
-        LibSSL.ssl_ctx_set_alpn_select_cb(@handle, alpn_cb, Box.box(protocol) as Void*)
+        @alpn_protocol = alpn_protocol = Box.box(protocol)
+        LibSSL.ssl_ctx_set_alpn_select_cb(@handle, alpn_cb, alpn_protocol)
         nil
       end
     end
