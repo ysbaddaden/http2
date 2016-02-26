@@ -15,7 +15,7 @@ module HTTP2
   class Connection
     property local_settings : Settings
     property remote_settings : Settings
-    private getter io : IO::FileDescriptor
+    private getter io : IO::FileDescriptor | OpenSSL::SSL::Socket
     private getter streams : Hash(Int32, Stream)
 
     def initialize(@io)
@@ -272,7 +272,7 @@ module HTTP2
       return if closed?
       @closed = true
 
-      unless io.closed?
+      #unless io.closed?
         if notify
           if error
             message, code = error.message, error.code
@@ -286,7 +286,7 @@ module HTTP2
           write Frame.new(Frame::Type::GOAWAY, find_or_create_stream(0), 0, payload.to_slice)
         end
         io.close
-      end
+      #end
 
       unless @channel.closed?
         @channel.send(nil)

@@ -1,19 +1,22 @@
 require "socket"
 require "http/request"
 require "./src/http2"
+require "./src/core_ext/openssl"
 
 module HTTP2
   class Server
-    def initialize(host = "::", port = 9292)
+    def initialize(host = "::", port = 9292, ssl = true)
       TCPServer.open(host, port) do |server|
         loop do
-          spawn handle_connection(server.accept)
+          spawn handle_connection(server.accept, ssl)
         end
       end
     end
 
-    def handle_connection(socket)
-      # TODO: handle HTTP/2 TLS negotiation (through ALPN; requires OpenSSL 1.0.2f)
+    def handle_connection(socket, ssl = true)
+      if ssl
+        socket = OpenSSL::SSL::Socket.new(socket, :server, ssl_context)
+      end
 
       if line = socket.gets
         method, resource, protocol = line.split
@@ -29,7 +32,7 @@ module HTTP2
     rescue ex
       puts "#{ex.class.name}: #{ex.message}\n#{ex.backtrace.join('\n')}"
     ensure
-      socket.close unless socket.closed?
+      socket.close #unless socket.closed?
     end
 
     def handle_http1_connection(socket, method, resource, protocol)
@@ -175,6 +178,21 @@ module HTTP2
 
       headers = HTTP::Headers{ "content-type" => "text/plain", "server" => "h2/0.1.0" }
       {"200", headers, "OK"}
+    end
+
+    private def ssl_context
+      @ssl_context ||= OpenSSL::SSL::Context.new(LibSSL.tlsv1_2_method).tap do |ctx|
+        ctx.options = LibSSL::SSL_OP_NO_SSLv2 | LibSSL::SSL_OP_NO_SSLv3 | LibSSL::SSL_OP_CIPHER_SERVER_PREFERENCE
+        ctx.ciphers = HTTP2::TLS_CIPHERS
+        ctx.set_tmp_ecdh_key(curve: LibSSL::NID_X9_62_prime256v1)
+        ctx.alpn_protocol = "h2"
+        ctx.certificate_chain = ssl_path(:crt)
+        ctx.private_key = ssl_path(:key)
+      end
+    end
+
+    private def ssl_path(extname)
+      File.join("ssl", "server.#{extname}")
     end
   end
 end
