@@ -67,20 +67,19 @@ module HTTP2
       @max_frame_size = size
     end
 
-    def self.parse(bytes)
-      new.tap(&.parse(bytes))
-    end
-
     def parse(bytes : Slice(UInt8))
-      parse(MemoryIO.new(bytes), bytes.size / 6)
+      parse(MemoryIO.new(bytes), bytes.size / 6) { yield }
     end
 
     def parse(io, size)
       size.times do |i|
-        id = io.read_bytes(UInt16, IO::ByteFormat::BigEndian)
+        id = Identifier.from_value?(io.read_bytes(UInt16, IO::ByteFormat::BigEndian))
         value = io.read_bytes(UInt32, IO::ByteFormat::BigEndian).to_i32
+        next unless id
 
-        case Identifier.from_value(id)
+        yield id, value
+
+        case id
         when Identifier::HEADER_TABLE_SIZE
           self.header_table_size = value
         when Identifier::ENABLE_PUSH

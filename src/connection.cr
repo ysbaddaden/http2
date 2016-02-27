@@ -6,6 +6,20 @@ require "./settings"
 require "./stream"
 require "colorize"
 
+class Logger::Dummy
+  {% for name in Logger::Severity.constants %}
+    def {{ name.downcase }}?
+      false
+    end
+
+    def {{ name.downcase }}(message)
+    end
+
+    def {{ name.downcase }}(&block)
+    end
+  {% end %}
+end
+
 module HTTP2
   DEFAULT_SETTINGS = Settings.new(
     max_concurrent_streams: 100,
@@ -15,10 +29,10 @@ module HTTP2
   class Connection
     property local_settings : Settings
     property remote_settings : Settings
-    private getter io : IO::FileDescriptor | OpenSSL::SSL::Socket
+    private getter io : IO #::FileDescriptor | OpenSSL::SSL::Socket
     private getter streams : Hash(Int32, Stream)
 
-    def initialize(@io)
+    def initialize(@io, @logger = nil)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
       @streams = {} of Int32 => Stream
@@ -27,6 +41,13 @@ module HTTP2
       @channel = Channel::Buffered(Frame | Array(Frame) | Nil).new
 
       spawn frame_writer
+    end
+
+    def logger
+      @logger ||= Logger::Dummy.new
+    end
+
+    def logger=(@logger)
     end
 
     private def frame_writer
@@ -47,7 +68,7 @@ module HTTP2
         rescue Channel::ClosedError
           break
         rescue ex
-          puts "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join(", ")}"
+          logger.debug { "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join(", ")}" }
         end
       end
     end
@@ -107,6 +128,7 @@ module HTTP2
             exclusive, dep_stream_id = read_stream_id
             weight = read_byte.to_i32 + 1
             stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
+            logger.debug { "  #{stream.priority.debug}" }
             len -= 5
           end
 
@@ -130,17 +152,21 @@ module HTTP2
         exclusive, dep_stream_id = read_stream_id
         weight = read_byte.to_i32 + 1
         stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
+        logger.debug { "  #{stream.priority.debug}" }
 
       when Frame::Type::RST_STREAM
         raise Error.protocol_error if stream.id == 0
         raise Error.frame_size_error unless frame.size == RST_STREAM_FRAME_SIZE
-        error_code = Error::Code.new(read_byte.to_u32)
+        error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
+        logger.debug { "  code=#{error_code.to_s}" }
 
       when Frame::Type::SETTINGS
         raise Error.protocol_error unless stream.id == 0
         raise Error.frame_size_error unless frame.size % 6 == 0
         unless frame.flags.ack?
-          remote_settings.parse(io, frame.size / 6)
+          remote_settings.parse(io, frame.size / 6) do |settings, value|
+            logger.debug { "  #{settings}=#{value}" }
+          end
           write Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
         end
 
@@ -157,23 +183,25 @@ module HTTP2
         error_message = String.new(buf)
 
         close(notify: false)
+        logger.debug { "  code=#{error_code.to_s}" }
 
         unless error_code == Error::Code::NO_ERROR
           raise ClientError.new(error_code, last_stream_id, error_message)
         end
 
-      #when Frame::Type::WINDOW_UPDATE
-      #  raise Error.frame_size_error unless frame.size == WINDOW_UPDATE_FRAME_SIZE
-      #  buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
-      #  #reserved = buf.bit(31)
-      #  window_size_increment = (buf & 0x7fffffff_u32).to_i32
-      #  raise Error.protocol_error unless MINIMUM_WINDOW_SIZE <= window_size_increment < MAXIMUM_WINDOW_SIZE
+      when Frame::Type::WINDOW_UPDATE
+        raise Error.frame_size_error unless frame.size == WINDOW_UPDATE_FRAME_SIZE
+        buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+        #reserved = buf.bit(31)
+        window_size_increment = (buf & 0x7fffffff_u32).to_i32
+        logger.debug { "  WINDOW_SIZE_INCREMENT=#{window_size_increment}" }
+        raise Error.protocol_error unless MINIMUM_WINDOW_SIZE <= window_size_increment < MAXIMUM_WINDOW_SIZE
 
-      #  if stream.id == 0
-      #    @window_size = window_size_increment
-      #  else
-      #    stream.window_size = window_size_increment
-      #  end
+        #if stream.id == 0
+        #  @window_size = window_size_increment
+        #else
+        #  stream.window_size = window_size_increment
+        #end
 
       when Frame::Type::CONTINUATION
         Error.protocol_error("UNEXPECTED continuation frame")
@@ -207,14 +235,14 @@ module HTTP2
       _, stream_id = read_stream_id
 
       unless frame_type = Frame::Type.from_value?(type)
-        puts "UNSUPPORTED FRAME 0x#{type.to_s(16)}"
+        logger.warn { "UNSUPPORTED FRAME 0x#{type.to_s(16)}" }
         io.skip(size)
         return
       end
 
       stream = find_or_create_stream(stream_id)
       frame = Frame.new(frame_type, stream, flags, size: size)
-      puts "recv #{frame.debug(color: :light_cyan)}"
+      logger.debug { "recv #{frame.debug(color: :light_cyan)}" }
 
       frame
     end
@@ -256,7 +284,7 @@ module HTTP2
       size = frame.payload?.try(&.size.to_u32) || 0_u32
       stream = frame.stream
 
-      puts "send #{frame.debug(color: :light_magenta)}"
+      logger.debug { "send #{frame.debug(color: :light_magenta)}" }
       stream.sending(frame) unless frame.type == Frame::Type::PUSH_PROMISE
 
       io.write_bytes((size << 8) | frame.type.to_u8, IO::ByteFormat::BigEndian)

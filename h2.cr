@@ -1,7 +1,71 @@
-require "socket"
 require "http/request"
+require "logger"
+require "socket"
 require "./src/http2"
 require "./src/core_ext/openssl"
+
+class IO::Hexdump
+  include IO
+
+  def initialize(@io, @logger)
+  end
+
+  def read(buf : Slice(UInt8))
+    @io.read(buf).tap do |ret|
+      offset = 0
+      line = MemoryIO.new(48)
+
+      message = String.build do |str|
+        buf.each_with_index do |byte, index|
+          if index > 0
+            if index % 16 == 0
+              str.print line.to_s
+              hexdump(buf, offset, str)
+              str.print '\n'
+              line = MemoryIO.new(48)
+            elsif index % 8 == 0
+              line.print "  "
+            else
+              line.print ' '
+            end
+          end
+
+          s = byte.to_s(16)
+          line.print '0' if s.size == 1
+          line.print s
+
+          offset = index
+        end
+
+        if line.pos > 0
+          str.print line.to_s
+          (48 - line.pos).times { str.print ' ' }
+          hexdump(buf, offset, str)
+        end
+      end
+
+      @logger.debug(message)
+    end
+  end
+
+  def write(buf : Slice(UInt8))
+    @io.write(buf)
+  end
+
+  private def hexdump(buf, offset, str)
+    str.print "  |"
+
+    buf[offset - 8 < 0 ? 0 : offset - 8, (offset % 8) + 1].each do |byte|
+      if 31 < byte < 127
+        str.print byte.chr
+      else
+        str.print '.'
+      end
+    end
+
+    str.print '|'
+  end
+end
 
 module HTTP2
   class Server
@@ -13,10 +77,25 @@ module HTTP2
       end
     end
 
+    def logger
+      @logger ||= Logger.new(STDOUT).tap do |logger|
+        logger.level = Logger::Severity::DEBUG
+        logger.formatter = Logger::Formatter.new do |s, d, p, message, io|
+          io << message
+        end
+      end
+    end
+
+    def logger=(@logger : Logger)
+      @logger = logger
+    end
+
     def handle_connection(socket, ssl = true)
       if ssl
         socket = OpenSSL::SSL::Socket.new(socket, :server, ssl_context)
       end
+
+      socket = IO::Hexdump.new(socket, logger)
 
       if line = socket.gets
         method, resource, protocol = line.split
@@ -30,7 +109,7 @@ module HTTP2
         handle_http1_connection(socket, method, resource, protocol)
       end
     rescue ex
-      puts "#{ex.class.name}: #{ex.message}\n#{ex.backtrace.join('\n')}"
+      logger.debug { "#{ex.class.name}: #{ex.message}\n#{ex.backtrace.join('\n')}" }
     ensure
       socket.close #unless socket.closed?
     end
@@ -65,11 +144,13 @@ module HTTP2
     end
 
     def handle_http2_connection(socket, request = nil, raw_settings = nil)
-      connection = Connection.new(socket)
-      puts "Connected"
+      connection = Connection.new(socket, logger)
+      logger.debug { "Connected" }
 
       if raw_settings
-        connection.remote_settings.parse(raw_settings)
+        connection.remote_settings.parse(raw_settings) do |setting, value|
+          logger.debug { "  #{setting}=#{value}" }
+        end
       end
       connection.read_client_preface(truncated: request == nil)
       connection.write_settings
@@ -101,37 +182,43 @@ module HTTP2
       end
 
     rescue err : ClientError
-      puts "#{err.code}: #{err.message}"
+      logger.debug { "#{err.code}: #{err.message}" }
 
     rescue err : Error
       if connection
         connection.close(error: err) unless connection.closed?
       end
-      puts "#{err.code}: #{err.message}"
+      logger.debug { "#{err.code}: #{err.message}" }
 
     ensure
       if connection
         connection.close unless connection.closed?
       end
-      puts "Disconnected"
+      logger.debug { "Disconnected" }
     end
 
     def handle_http2_request(stream, request)
       if %w(POST PATCH PUT).includes?(request.method)
         while line = stream.data.gets
-          puts "data: #{line.inspect}"
+          logger.debug {  "data: #{line.inspect}" }
         end
       end
 
       authority = request.headers[":authority"]? || request.headers["Host"]
       scheme = request.headers[":scheme"]? || "http"
 
-      push = stream.send_push_promise(HTTP::Headers{
+      appjs = stream.send_push_promise(HTTP::Headers{
         ":method" => "GET",
         ":path" => "/javascripts/application.js",
         ":authority" => authority,
         ":scheme" => scheme,
         "content-type" => "application/javascript",
+      })
+      favicon = stream.send_push_promise(HTTP::Headers{
+        ":method" => "GET",
+        ":path" => "/favicon.ico",
+        ":authority" => authority,
+        ":scheme" => scheme,
       })
 
       status, headers, body = handle_request(request)
@@ -141,16 +228,19 @@ module HTTP2
         stream.send_headers(headers, Frame::Flags::END_STREAM)
       else
         stream.send_headers(headers)
-        stream.send_data("OK")
+        stream.send_data(body)
         stream.send_data("", Frame::Flags::END_STREAM)
       end
 
-      if push && push.try(&.state) != Stream::State::CLOSED
-        push.send_headers(HTTP::Headers{
+      if appjs && appjs.try(&.state) != Stream::State::CLOSED
+        appjs.send_headers(HTTP::Headers{
            ":status" => "200",
            "content-type" => "application/javascript",
         })
-        push.send_data("(function () {}());", Frame::Flags::END_STREAM)
+        appjs.send_data("(function () { console.log('server push!'); }());", Frame::Flags::END_STREAM)
+      end
+      if favicon && favicon.try(&.state) != Stream::State::CLOSED
+        favicon.send_headers(HTTP::Headers{ ":status" => "404" }, Frame::Flags::END_STREAM)
       end
     ensure
       stream.data.close
@@ -171,13 +261,29 @@ module HTTP2
     end
 
     def handle_request(request)
-      puts "; Handle request:\n  #{request.method} #{request.resource}"
+      logger.debug { "; Handle request:\n  #{request.method} #{request.resource}" }
       request.headers.each do |key, value|
-        puts "  #{key.colorize(:light_blue)}: #{value.join(", ")}"
+        logger.debug { "  #{key.colorize(:light_blue)}: #{value.join(", ")}" }
       end
 
-      headers = HTTP::Headers{ "content-type" => "text/plain", "server" => "h2/0.1.0" }
-      {"200", headers, "OK"}
+      headers = HTTP::Headers{
+        "content-type" => "text/html",
+        "server" => "h2/0.1.0"
+      }
+      body = <<-HTML
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>#{request.version} on Crystal</title>
+          <script src="/javascripts/application.js"></script>
+        </head>
+        <body>
+          Served with #{request.version}
+        </body>
+        </html>
+        HTML
+
+      {"200", headers, body}
     end
 
     private def ssl_context

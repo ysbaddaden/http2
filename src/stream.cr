@@ -9,6 +9,10 @@ module HTTP2
 
     def initialize(@exclusive, @dep_stream_id, @weight)
     end
+
+    def debug
+      "exclusive=#{exclusive} dep_stream_id=#{dep_stream_id} weight=#{weight}"
+    end
   end
 
   DEFAULT_PRIORITY = Priority.new(false, 0, 16)
@@ -155,9 +159,16 @@ module HTTP2
       transition(frame, receiving: false)
     end
 
+    # :nodoc:
+    NON_TRANSITIONAL_FRAMES = [
+      Frame::Type::PRIORITY,
+      Frame::Type::GOAWAY,
+      Frame::Type::PING,
+      Frame::Type::WINDOW_UPDATE,
+    ]
+
     private def transition(frame : Frame, receiving = false)
-      return if frame.stream.id == 0
-      return if frame.type == Frame::Type::PRIORITY || frame.type == Frame::Type::GOAWAY || frame.type == Frame::Type::PING
+      return if frame.stream.id == 0 || NON_TRANSITIONAL_FRAMES.includes?(frame.type)
 
       case state
       when State::IDLE
@@ -230,7 +241,7 @@ module HTTP2
     end
 
     private def state=(@state)
-      puts "; Stream is now #{state}"
+      connection.logger.debug { "; Stream is now #{state}" }
     end
   end
 end
