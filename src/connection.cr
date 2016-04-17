@@ -3,7 +3,7 @@ require "./errors"
 require "./frame"
 require "./hpack"
 require "./settings"
-require "./stream"
+require "./streams"
 require "colorize"
 
 class Logger::Dummy
@@ -30,19 +30,21 @@ module HTTP2
     property local_settings : Settings
     property remote_settings : Settings
     private getter io : IO #::FileDescriptor | OpenSSL::SSL::Socket
-    private getter streams : Hash(Int32, Stream)
 
     @logger : Logger|Logger::Dummy|Nil
 
     def initialize(@io, @logger = nil)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
-      @streams = {} of Int32 => Stream
-      @stream_id_counter = 0
-      @closed = false
       @channel = Channel::Buffered(Frame | Array(Frame) | Nil).new
-
+      @closed = false
       spawn frame_writer
+    end
+
+    def streams
+      # FIXME: thread safety?
+      #        can't be in #initialize because of self reference
+      @streams ||= Streams.new(self)
     end
 
     def logger
@@ -76,6 +78,8 @@ module HTTP2
     end
 
     def hpack_encoder
+      # FIXME: thread safety?
+      #        move to #initialize?
       @hpack_encoder ||= HPACK::Encoder.new(
         max_table_size: local_settings.header_table_size,
         indexing: HPACK::Indexing::NONE,
@@ -83,22 +87,10 @@ module HTTP2
     end
 
     def hpack_decoder
+      # FIXME: thread safety?
+      #        move to #initialize? what about dependency on remote settings?
       @hpack_decoder ||= HPACK::Decoder.new(
         max_table_size: remote_settings.header_table_size)
-    end
-
-    protected def find_or_create_stream(id)
-      # FIXME: thread safety
-      # TODO: verify that streams are within max_concurrent_streams setting
-      streams[id] ||= Stream.new(self, id)
-    end
-
-    protected def create_stream(state = Stream::State::IDLE)
-      # FIXME: thread safety
-      # TODO: verify that streams are within max_concurrent_streams setting
-      id = @stream_id_counter += 2
-      raise Error.internal_error("STREAM #{id} already exists") if streams[id]?
-      streams[id] = Stream.new(self, id, state: state)
     end
 
     def read_client_preface(truncated = false)
@@ -142,7 +134,7 @@ module HTTP2
       when Frame::Type::PUSH_PROMISE
         read_padded(frame) do |len|
           _, promised_stream_id = read_stream_id
-          find_or_create_stream(promised_stream_id).receiving(frame)
+          streams.find_or_create(promised_stream_id).receiving(frame)
 
           len -= 4
           io.read_fully(buf = Slice(UInt8).new(len))
@@ -176,7 +168,7 @@ module HTTP2
         raise Error.protocol_error unless stream.id == 0
         raise Error.frame_size_error unless frame.size == PING_FRAME_SIZE
         io.read_fully(buf = Slice(UInt8).new(frame.size))
-        write Frame.new(Frame::Type::PING, find_or_create_stream(0), 1, buf) unless frame.flags.ack?
+        write Frame.new(Frame::Type::PING, streams.find_or_create(0), 1, buf) unless frame.flags.ack?
 
       when Frame::Type::GOAWAY
         _, last_stream_id = read_stream_id
@@ -242,7 +234,7 @@ module HTTP2
         return
       end
 
-      stream = find_or_create_stream(stream_id)
+      stream = streams.find_or_create(stream_id)
       frame = Frame.new(frame_type, stream, flags, size: size)
       logger.debug { "recv #{frame.debug(color: :light_cyan)}" }
 
@@ -279,7 +271,7 @@ module HTTP2
     end
 
     def write_settings
-      write Frame.new(HTTP2::Frame::Type::SETTINGS, find_or_create_stream(0), 0, local_settings.to_payload)
+      write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find_or_create(0), 0, local_settings.to_payload)
     end
 
     protected def write(frame : Frame)
@@ -310,10 +302,10 @@ module HTTP2
             message, code = "", Error::Code::NO_ERROR
           end
           payload = MemoryIO.new(8 + message.bytesize)
-          payload.write_bytes(last_stream_id.to_u32, IO::ByteFormat::BigEndian)
+          payload.write_bytes(streams.last_stream_id.to_u32, IO::ByteFormat::BigEndian)
           payload.write_bytes(code.to_u32, IO::ByteFormat::BigEndian)
           payload << message
-          write Frame.new(Frame::Type::GOAWAY, find_or_create_stream(0), 0, payload.to_slice)
+          write Frame.new(Frame::Type::GOAWAY, streams.find_or_create(0), 0, payload.to_slice)
         end
         io.close
       #end
@@ -335,14 +327,6 @@ module HTTP2
     private def read_stream_id
       buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
       {buf.bit(31), (buf & 0x7fffffff_u32).to_i32}
-    end
-
-    private def last_stream_id
-      if streams.any?
-        streams.keys.max
-      else
-        0
-      end
     end
   end
 end

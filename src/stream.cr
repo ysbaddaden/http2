@@ -72,12 +72,14 @@ module HTTP2
     end
 
     def send_priority
-      io = MemoryIO.new
       exclusive = priority.exclusive ? 0x80000000_u32 : 0_u32
       dep_stream_id = priority.dep_stream_id.to_u32 & 0x7fffffff_u32
+
+      io = MemoryIO.new
       io.write_bytes(exclusive | dep_stream_id, IO::ByteFormat::BigEndian)
       io.write_byte((priority.weight - 1).to_u8)
       io.rewind
+
       connection.send Frame.new(Frame::Type::PRIORITY, self, 0, io.to_slice)
     end
 
@@ -89,7 +91,7 @@ module HTTP2
     def send_push_promise(headers, flags = 0)
       return unless connection.remote_settings.enable_push
 
-      connection.create_stream(state: Stream::State::RESERVED_LOCAL).tap do |stream|
+      connection.streams.create(state: Stream::State::RESERVED_LOCAL).tap do |stream|
         io = MemoryIO.new
         io.write_bytes(stream.id.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)
         payload = connection.hpack_encoder.encode(headers, writer: io)

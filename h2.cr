@@ -163,7 +163,7 @@ module HTTP2
       end
 
       if request.is_a?(HTTP::Request)
-        stream = connection.find_or_create_stream(1)
+        stream = connection.streams.find_or_create(1)
 
         # FIXME: the cast is required for Crystal to compile
         spawn handle_http2_request(stream, request as HTTP::Request)
