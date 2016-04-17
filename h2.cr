@@ -7,7 +7,7 @@ require "./src/core_ext/openssl"
 class IO::Hexdump
   include IO
 
-  def initialize(@io, @logger)
+  def initialize(@io : IO, @logger : Logger|Logger::Dummy)
   end
 
   def read(buf : Slice(UInt8))
@@ -77,6 +77,8 @@ module HTTP2
       end
     end
 
+    @logger : Logger|Logger::Dummy|Nil
+
     def logger
       @logger ||= Logger.new(STDOUT).tap do |logger|
         logger.level = Logger::Severity::DEBUG
@@ -86,7 +88,7 @@ module HTTP2
       end
     end
 
-    def logger=(@logger : Logger)
+    def logger=(@logger)
       @logger = logger
     end
 
@@ -287,7 +289,7 @@ module HTTP2
     end
 
     private def ssl_context
-      @ssl_context ||= OpenSSL::SSL::Context.new(LibSSL.tlsv1_2_method).tap do |ctx|
+      @ssl_context ||= OpenSSL::SSL::Context.new(LibSSL.tlsv1_2_method) do |ctx|
         ctx.options = LibSSL::SSL_OP_NO_SSLv2 | LibSSL::SSL_OP_NO_SSLv3 | LibSSL::SSL_OP_CIPHER_SERVER_PREFERENCE
         ctx.ciphers = HTTP2::TLS_CIPHERS
         ctx.set_tmp_ecdh_key(curve: LibSSL::NID_X9_62_prime256v1)

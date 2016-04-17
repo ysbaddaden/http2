@@ -8,6 +8,11 @@ module OpenSSL
         @handle = LibSSL.ssl_ctx_new(method)
       end
 
+      def initialize(method : LibSSL::SSLMethod)
+        @handle = LibSSL.ssl_ctx_new(method)
+        yield self
+      end
+
       def options=(options)
         LibSSL.ssl_ctx_ctrl(@handle, LibSSL::SSL_CTRL_OPTIONS, options, nil)
       end
@@ -50,6 +55,8 @@ module OpenSSL
         protocol.to_slice.copy_to(proto.to_unsafe + 1, protocol.bytesize)
         self.alpn_protocol = proto
       end
+
+      @alpn_protocol : Pointer(Void)?
 
       def alpn_protocol=(protocol : Slice(UInt8))
         alpn_cb = ->(ssl : LibSSL::SSL, o : LibC::Char**, olen : LibC::Char*, i : LibC::Char*, ilen : LibC::Int, data : Void*) {

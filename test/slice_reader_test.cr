@@ -11,11 +11,8 @@ module HTTP2
       SliceReader.new(slice(1, 2, 3, 4))
     end
 
-    def reader
-      @reader ||= new_reader
-    end
-
     def test_read
+      reader = new_reader
       refute reader.done?
       assert_equal slice(1), reader.read(1)
       assert_equal slice(2, 3, 4), reader.read(3)
@@ -24,6 +21,7 @@ module HTTP2
     end
 
     def test_read_byte
+      reader = new_reader
       refute reader.done?
       assert_equal 1_u8, reader.read_byte
       assert_equal 2_u8, reader.read_byte

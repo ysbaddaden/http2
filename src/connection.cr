@@ -32,6 +32,8 @@ module HTTP2
     private getter io : IO #::FileDescriptor | OpenSSL::SSL::Socket
     private getter streams : Hash(Int32, Stream)
 
+    @logger : Logger|Logger::Dummy|Nil
+
     def initialize(@io, @logger = nil)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
@@ -303,7 +305,7 @@ module HTTP2
       #unless io.closed?
         if notify
           if error
-            message, code = error.message, error.code
+            message, code = error.message || "", error.code
           else
             message, code = "", Error::Code::NO_ERROR
           end

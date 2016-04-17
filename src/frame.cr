@@ -52,9 +52,11 @@ module HTTP2
     getter stream : Stream
     property flags : Flags
     property! payload : Slice(UInt8)
+    @size : Int32?
 
-    def initialize(@type, @stream : Stream, flags = 0_u8, @payload = nil, @size = nil)
+    def initialize(@type, @stream : Stream, flags = 0_u8, @payload = nil, size = nil)
       @flags = Flags.new(flags.to_u8)
+      @size = size.try(&.to_i32)
     end
 
     def size

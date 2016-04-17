@@ -52,7 +52,7 @@ module HTTP2
     property priority : Priority
     private getter connection : Connection
 
-    def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state = State::IDLE : State)
+    def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state : State = State::IDLE)
     end
 
     def data
