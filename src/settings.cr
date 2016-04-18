@@ -41,10 +41,6 @@ module HTTP2
       @enable_push || DEFAULT_ENABLE_PUSH
     end
 
-    def enable_push=(value : Int)
-      @enable_push = value == 1
-    end
-
     def enable_push=(value : Bool)
       @enable_push = value
     end
@@ -83,7 +79,8 @@ module HTTP2
         when Identifier::HEADER_TABLE_SIZE
           self.header_table_size = value
         when Identifier::ENABLE_PUSH
-          self.enable_push = value
+          raise Error.protocol_error unless value == 0 || value == 1
+          self.enable_push = value == 1
         when Identifier::MAX_CONCURRENT_STREAMS
           self.max_concurrent_streams = value
         when Identifier::INITIAL_WINDOW_SIZE

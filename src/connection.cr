@@ -72,7 +72,8 @@ module HTTP2
         rescue Channel::ClosedError
           break
         rescue ex
-          logger.debug { "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join(", ")}" }
+          logger.debug { "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join('\n')}" }
+          #logger.debug { "#{ex.class.name} #{ex.message}" }
         end
       end
     end
@@ -110,39 +111,71 @@ module HTTP2
 
       case frame.type
       when Frame::Type::DATA
+        raise Error.protocol_error if stream.id == 0
         read_padded(frame) do |len|
           io.read_fully(buf = Slice(UInt8).new(len))
           stream.data.write(buf)
-          stream.data.close_write if frame.flags.end_stream?
+
+          if frame.flags.end_stream?
+            stream.data.close_write
+            if content_length = stream.headers["content-length"]?.try(&.to_i)
+              # TODO: how to convey the error to the request handler?
+              raise Error.protocol_error("MALFORMED data frame") unless content_length == stream.data.size
+            end
+          end
         end
 
       when Frame::Type::HEADERS
+        raise Error.protocol_error if stream.id == 0
         read_padded(frame) do |len|
           if frame.flags.priority?
             exclusive, dep_stream_id = read_stream_id
+            if stream.id == dep_stream_id
+              raise Error.protocol_error("INVALID stream dependency")
+            end
             weight = read_byte.to_i32 + 1
             stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
             logger.debug { "  #{stream.priority.debug}" }
             len -= 5
           end
 
+          if frame.flags.end_stream? && stream.data?
+            # trailer part
+            stream.data.close_write
+            if content_length = stream.headers["content-length"]?.try(&.to_i)
+              # TODO: how to convey the error to the request handler?
+              raise Error.protocol_error("MALFORMED data frame") unless content_length == stream.data.size
+            end
+          end
+          if stream.headers.any? && !frame.flags.end_stream?
+            raise Error.protocol_error("INVALID trailer part")
+          end
+
           io.read_fully(buf = Slice(UInt8).new(len))
-          buf = read_headers_payload(buf.to_unsafe, len) unless frame.flags.end_headers?
-          hpack_decoder.decode(buf, stream.headers)
+          buf = read_headers_payload(frame, buf.to_unsafe, len)
+
+          begin
+            hpack_decoder.decode(buf, stream.headers)
+          rescue ex : HPACK::Error
+            raise Error.compression_error
+          end
         end
 
       when Frame::Type::PUSH_PROMISE
+        raise Error.protocol_error if stream.id == 0
         read_padded(frame) do |len|
           _, promised_stream_id = read_stream_id
-          streams.find_or_create(promised_stream_id).receiving(frame)
+          streams.find(promised_stream_id).receiving(frame)
 
           len -= 4
           io.read_fully(buf = Slice(UInt8).new(len))
-          buf = read_headers_payload(buf.to_unsafe, len) unless frame.flags.end_headers?
+          buf = read_headers_payload(frame, buf.to_unsafe, len)
           hpack_decoder.decode(buf, stream.headers)
         end
 
       when Frame::Type::PRIORITY
+        raise Error.protocol_error if stream.id == 0
+        raise Error.frame_size_error unless frame.size == PRIORITY_FRAME_SIZE
         exclusive, dep_stream_id = read_stream_id
         weight = read_byte.to_i32 + 1
         stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
@@ -168,7 +201,7 @@ module HTTP2
         raise Error.protocol_error unless stream.id == 0
         raise Error.frame_size_error unless frame.size == PING_FRAME_SIZE
         io.read_fully(buf = Slice(UInt8).new(frame.size))
-        write Frame.new(Frame::Type::PING, streams.find_or_create(0), 1, buf) unless frame.flags.ack?
+        write Frame.new(Frame::Type::PING, streams.find(0), 1, buf) unless frame.flags.ack?
 
       when Frame::Type::GOAWAY
         _, last_stream_id = read_stream_id
@@ -215,6 +248,8 @@ module HTTP2
         size -= 1 + pad_size
       end
 
+      raise Error.protocol_error("INVALID pad length") if size < 0
+
       yield size
 
       if pad_size
@@ -228,31 +263,36 @@ module HTTP2
       flags = read_byte
       _, stream_id = read_stream_id
 
+      if size > remote_settings.max_frame_size
+        raise Error.frame_size_error
+      end
+
       unless frame_type = Frame::Type.from_value?(type)
         logger.warn { "UNSUPPORTED FRAME 0x#{type.to_s(16)}" }
         io.skip(size)
         return
       end
 
-      stream = streams.find_or_create(stream_id)
+      stream = streams.find(stream_id)
       frame = Frame.new(frame_type, stream, flags, size: size)
       logger.debug { "recv #{frame.debug(color: :light_cyan)}" }
 
       frame
     end
 
-    private def read_headers_payload(ptr : UInt8*, len)
+    private def read_headers_payload(frame, ptr : UInt8*, len)
+      stream = frame.stream
+
       loop do
+        break if frame.flags.end_headers?
         raise Error.protocol_error("EXPECTED continuation frame") unless frame = read_frame
         raise Error.protocol_error("EXPECTED continuation frame") unless frame.type == Frame::Type::CONTINUATION
-        raise Error.protocol_error("EXPECTED continuation frame") unless frame.stream == frame.stream
+        raise Error.protocol_error("EXPECTED continuation frame for stream ##{stream.id} not ##{frame.stream.id}") unless frame.stream == stream
         # FIXME: raise if the payload grows too big
 
         ptr = ptr.realloc(len + frame.size)
         io.read_fully(Slice(UInt8).new(ptr + len, frame.size))
         len += frame.size
-
-        break if frame.flags.end_headers?
       end
 
       ptr.to_slice(len)
@@ -271,7 +311,7 @@ module HTTP2
     end
 
     def write_settings
-      write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find_or_create(0), 0, local_settings.to_payload)
+      write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), 0, local_settings.to_payload)
     end
 
     protected def write(frame : Frame)
@@ -305,7 +345,7 @@ module HTTP2
           payload.write_bytes(streams.last_stream_id.to_u32, IO::ByteFormat::BigEndian)
           payload.write_bytes(code.to_u32, IO::ByteFormat::BigEndian)
           payload << message
-          write Frame.new(Frame::Type::GOAWAY, streams.find_or_create(0), 0, payload.to_slice)
+          write Frame.new(Frame::Type::GOAWAY, streams.find(0), 0, payload.to_slice)
         end
         io.close
       #end

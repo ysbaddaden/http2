@@ -55,6 +55,20 @@ module HTTP2
     def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state : State = State::IDLE)
     end
 
+    def active?
+      state == State::OPEN ||
+      state == State::HALF_CLOSED_LOCAL ||
+      state == State::HALF_CLOSED_REMOTE
+    end
+
+    def trailing?
+      !header.empty?
+    end
+
+    def data?
+      !!@data
+    end
+
     def data
       @data ||= Data.new
     end
@@ -153,6 +167,13 @@ module HTTP2
       nil
     end
 
+    def send_rst_stream(error_code : Error::Code)
+      io = MemoryIO.new
+      io.write_bytes(error_code.value.to_u32, IO::ByteFormat::BigEndian)
+      io.rewind
+      connection.send Frame.new(Frame::Type::RST_STREAM, self, 0, io.to_slice)
+    end
+
     def receiving(frame : Frame)
       transition(frame, receiving: true)
     end
@@ -166,7 +187,6 @@ module HTTP2
       Frame::Type::PRIORITY,
       Frame::Type::GOAWAY,
       Frame::Type::PING,
-      Frame::Type::WINDOW_UPDATE,
     ]
 
     private def transition(frame : Frame, receiving = false)
@@ -176,7 +196,7 @@ module HTTP2
       when State::IDLE
         case frame.type
         when Frame::Type::HEADERS
-          self.state = State::OPEN
+          self.state = frame.flags.end_stream? ? State::HALF_CLOSED_REMOTE : State::OPEN
         when Frame::Type::PUSH_PROMISE
           self.state = receiving ? State::RESERVED_REMOTE : State::RESERVED_LOCAL
         else
@@ -219,7 +239,24 @@ module HTTP2
           error!(receiving)
         end
 
-      when State::HALF_CLOSED_LOCAL, State::HALF_CLOSED_REMOTE
+      when State::HALF_CLOSED_LOCAL
+        #if sending
+        #  case frame.type
+        #  when Frame::Type::HEADERS, Frame::Type::CONTINUATION, Frame::Type::DATA
+        #    raise Error.stream_closed("STREAM #{id} is #{state}")
+        #  end
+        #end
+        if frame.flags.end_stream? || frame.type == Frame::Type::RST_STREAM
+          self.state = State::CLOSED
+        end
+
+      when State::HALF_CLOSED_REMOTE
+        if receiving
+          case frame.type
+          when Frame::Type::HEADERS, Frame::Type::CONTINUATION, Frame::Type::DATA
+            raise Error.stream_closed("STREAM #{id} is #{state}")
+          end
+        end
         if frame.flags.end_stream? || frame.type == Frame::Type::RST_STREAM
           self.state = State::CLOSED
         end

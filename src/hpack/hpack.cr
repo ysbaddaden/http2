@@ -27,44 +27,49 @@ module HTTP2
 
       def decode(bytes, headers = HTTP::Headers.new)
         @reader = SliceReader.new(bytes)
+        decoded_common_headers = false
 
         until reader.done?
           if reader.current_byte.bit(7) == 1           # 1.......  indexed
             index = integer(7)
             raise Error.new("invalid index: 0") if index == 0
             name, value = indexed(index)
-            headers.add(name, value)
 
           elsif reader.current_byte.bit(6) == 1        # 01......  literal with incremental indexing
             index = integer(6)
             name = index == 0 ? string : indexed(index).first
             value = string
-            headers.add(name, value)
             table.add(name, value)
 
           elsif reader.current_byte.bit(5) == 1        # 001.....  table max size update
-            table.resize(integer(5))
+            raise Error.new("unexpected dynamic table size update") if decoded_common_headers
+            maximum = integer(5)
+            table.resize(maximum)
+            next
 
           elsif reader.current_byte.bit(4) == 1        # 0001....  literal never indexed
             index = integer(4)
             name = index == 0 ? string : indexed(index).first
             value = string
-            headers.add(name, value)
             # TODO: retain the never_indexed property
 
           else                                         # 0000....  literal without indexing
             index = integer(4)
             name = index == 0 ? string : indexed(index).first
             value = string
-            headers.add(name, value)
           end
+
+          decoded_common_headers = 0 < index < STATIC_TABLE_SIZE
+          headers.add(name, value)
         end
 
         headers
+      rescue ex : IndexError
+        raise Error.new("invalid compression")
       end
 
       protected def indexed(index)
-        if index < STATIC_TABLE_SIZE
+        if 0 < index < STATIC_TABLE_SIZE
           return STATIC_TABLE[index - 1]
         end
 

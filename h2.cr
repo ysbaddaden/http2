@@ -52,6 +52,14 @@ class IO::Hexdump
     @io.write(buf)
   end
 
+  def closed?
+    @io.closed?
+  end
+
+  def close
+    @io.close
+  end
+
   private def hexdump(buf, offset, str)
     str.print "  |"
 
@@ -107,7 +115,7 @@ module HTTP2
 
       if protocol == "HTTP/2.0"
         handle_http2_connection(socket)
-      else
+      elsif protocol.starts_with?("HTTP/")
         handle_http1_connection(socket, method, resource, protocol)
       end
     rescue ex
@@ -159,11 +167,11 @@ module HTTP2
 
       frame = connection.receive
       unless frame.try(&.type) == Frame::Type::SETTINGS
-        Error.protocol_error("EXPECTED settings frame")
+        raise Error.protocol_error("EXPECTED settings frame")
       end
 
       if request.is_a?(HTTP::Request)
-        stream = connection.streams.find_or_create(1)
+        stream = connection.streams.find(1)
 
         # FIXME: the cast is required for Crystal to compile
         spawn handle_http2_request(stream, request as HTTP::Request)
@@ -178,6 +186,8 @@ module HTTP2
           method, path = headers[":method"], headers[":path"]
           req = HTTP::Request.new(method, path, headers: headers, version: "HTTP/2.0")
           spawn handle_http2_request(frame.stream, req)
+        when Frame::Type::PUSH_PROMISE
+          raise Error.protocol_error("UNEXPECTED push promise frame")
         when Frame::Type::GOAWAY
           break
         end
