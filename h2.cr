@@ -4,6 +4,14 @@ require "socket"
 require "./src/http2"
 require "./src/core_ext/openssl"
 
+class HTTP::Request
+  def initialize(@method : String, @resource : String, @headers : Headers, @version = "HTTP/2.0")
+    # NOTE: the original constructor always resets Content-Length to "0",
+    #       this is nice for outgoing requests, but it breaks received requests
+    #       with a streaming body!
+  end
+end
+
 class IO::Hexdump
   include IO
 
@@ -139,10 +147,10 @@ module HTTP2
         socket << "Upgrade: h2c\r\n"
         socket << "\r\n"
         settings = Base64.decode(headers.get("HTTP2-Settings").first)
-        request = HTTP::Request.new(method, resource, headers: headers, version: "HTTP/2.0")
+        request = HTTP::Request.new(method, resource, headers, version: "HTTP/2.0")
         handle_http2_connection(socket, request, raw_settings: settings)
       else
-        request = HTTP::Request.new(method, resource, headers: headers, version: protocol)
+        request = HTTP::Request.new(method, resource, headers, version: protocol)
         handle_http1_request(socket, request)
       end
     end
@@ -182,12 +190,44 @@ module HTTP2
 
         case frame.type
         when Frame::Type::HEADERS
+          # don't dispatch twice
+          next if frame.stream.trailing_headers?
+
+          # TODO: move the following validations to HPACK decoder (add mecanism to validate headers as they are decoded)
           headers = frame.stream.headers
-          method, path = headers[":method"], headers[":path"]
-          req = HTTP::Request.new(method, path, headers: headers, version: "HTTP/2.0")
+          regular = false
+
+          headers.each do |name, value|
+            regular ||= !name.starts_with?(':')
+            if (name.starts_with?(':') && (regular || !REQUEST_PSEUDO_HEADERS.includes?(name))) || ("A" .. "Z").covers?(name)
+              raise Error.protocol_error("MALFORMED #{name} header")
+            end
+            if name == "connection"
+              raise Error.protocol_error("MALFORMED #{name} header")
+            end
+            if name == "te" && value != "trailers"
+              raise Error.protocol_error("MALFORMED #{name} header")
+            end
+          end
+
+          unless headers.get?(":method").try(&.size.==(1))
+            raise Error.protocol_error("INVALID :method pseudo-header")
+          end
+
+          unless headers[":method"] == "CONNECT"
+            %w(:scheme :path).each do |name|
+              unless headers.get?(name).try(&.size.==(1))
+                raise Error.protocol_error("INVALID #{name} pseudo-header")
+              end
+            end
+          end
+
+          req = HTTP::Request.new(headers[":method"], headers[":path"], headers, version: "HTTP/2.0")
           spawn handle_http2_request(frame.stream, req)
+
         when Frame::Type::PUSH_PROMISE
           raise Error.protocol_error("UNEXPECTED push promise frame")
+
         when Frame::Type::GOAWAY
           break
         end

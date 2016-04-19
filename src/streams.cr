@@ -12,10 +12,6 @@ module HTTP2
 
     # Finds an incoming stream, silently creating it if it doesn't exist yet.
     def find(id)
-      unless valid?(id)
-        raise Error.protocol_error("INVALID stream_id ##{id}")
-      end
-
       @mutex.synchronize do
         if max = @connection.local_settings.max_concurrent_streams
           if active_count(1) >= max
@@ -26,7 +22,8 @@ module HTTP2
       end
     end
 
-    private def valid?(id)
+    # Returns true if the incoming stream id is valid for the current connection.
+    def valid?(id)
       id == 0 || (id % 2) == 1
     end
 

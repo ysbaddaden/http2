@@ -61,10 +61,6 @@ module HTTP2
       state == State::HALF_CLOSED_REMOTE
     end
 
-    def trailing?
-      !header.empty?
-    end
-
     def data?
       !!@data
     end
@@ -75,6 +71,14 @@ module HTTP2
 
     def headers
       @headers ||= HTTP::Headers.new
+    end
+
+    def trailing_headers?
+      !!@trailing_headers
+    end
+
+    def trailing_headers
+      @trailing_headers ||= HTTP::Headers.new
     end
 
     def ==(other : Stream)

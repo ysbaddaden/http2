@@ -118,9 +118,9 @@ module HTTP2
 
           if frame.flags.end_stream?
             stream.data.close_write
-            if content_length = stream.headers["content-length"]?.try(&.to_i)
+            if content_length = stream.headers["content-length"]?
               # TODO: how to convey the error to the request handler?
-              raise Error.protocol_error("MALFORMED data frame") unless content_length == stream.data.size
+              raise Error.protocol_error("MALFORMED data frame") unless content_length.to_i == stream.data.size
             end
           end
         end
@@ -130,24 +130,14 @@ module HTTP2
         read_padded(frame) do |len|
           if frame.flags.priority?
             exclusive, dep_stream_id = read_stream_id
-            if stream.id == dep_stream_id
-              raise Error.protocol_error("INVALID stream dependency")
-            end
+            raise Error.protocol_error("INVALID stream dependency") if stream.id == dep_stream_id
             weight = read_byte.to_i32 + 1
             stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
             logger.debug { "  #{stream.priority.debug}" }
             len -= 5
           end
 
-          if frame.flags.end_stream? && stream.data?
-            # trailer part
-            stream.data.close_write
-            if content_length = stream.headers["content-length"]?.try(&.to_i)
-              # TODO: how to convey the error to the request handler?
-              raise Error.protocol_error("MALFORMED data frame") unless content_length == stream.data.size
-            end
-          end
-          if stream.headers.any? && !frame.flags.end_stream?
+          if stream.data? && !frame.flags.end_stream?
             raise Error.protocol_error("INVALID trailer part")
           end
 
@@ -155,9 +145,24 @@ module HTTP2
           buf = read_headers_payload(frame, buf.to_unsafe, len)
 
           begin
-            hpack_decoder.decode(buf, stream.headers)
+            if stream.data?
+              hpack_decoder.decode(buf, stream.trailing_headers)
+            else
+              hpack_decoder.decode(buf, stream.headers)
+            end
           rescue ex : HPACK::Error
             raise Error.compression_error
+          end
+
+          if stream.data?
+            # https://tools.ietf.org/html/rfc7540#section-8.1
+            # https://tools.ietf.org/html/rfc7230#section-4.1.2
+            stream.data.close_write
+
+            if content_length = stream.headers["content-length"]?
+              # TODO: how to convey the error to the request handler?
+              raise Error.protocol_error("MALFORMED data frame") unless content_length.to_i == stream.data.size
+            end
           end
         end
 
@@ -177,6 +182,7 @@ module HTTP2
         raise Error.protocol_error if stream.id == 0
         raise Error.frame_size_error unless frame.size == PRIORITY_FRAME_SIZE
         exclusive, dep_stream_id = read_stream_id
+        raise Error.protocol_error("INVALID stream dependency") if stream.id == dep_stream_id
         weight = read_byte.to_i32 + 1
         stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
         logger.debug { "  #{stream.priority.debug}" }
@@ -273,6 +279,9 @@ module HTTP2
         return
       end
 
+      unless frame_type.priority? || streams.valid?(stream_id)
+        raise Error.protocol_error("INVALID stream_id ##{stream_id}")
+      end
       stream = streams.find(stream_id)
       frame = Frame.new(frame_type, stream, flags, size: size)
       logger.debug { "recv #{frame.debug(color: :light_cyan)}" }
