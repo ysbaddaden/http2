@@ -50,7 +50,7 @@ module HTTP2
     end
 
     def initial_window_size=(size)
-      raise Error.flow_control_error unless MINIMUM_WINDOW_SIZE <= size < MAXIMUM_WINDOW_SIZE
+      raise Error.flow_control_error unless 0 <= size < MAXIMUM_WINDOW_SIZE
       @initial_window_size = size
     end
 
