@@ -193,19 +193,19 @@ module HTTP2
       authority = request.headers[":authority"]? || request.headers["Host"]
       scheme = request.headers[":scheme"]? || "http"
 
-      appjs = stream.send_push_promise(HTTP::Headers{
-        ":method" => "GET",
-        ":path" => "/javascripts/application.js",
-        ":authority" => authority,
-        ":scheme" => scheme,
-        "content-type" => "application/javascript",
-      })
-      favicon = stream.send_push_promise(HTTP::Headers{
-        ":method" => "GET",
-        ":path" => "/favicon.ico",
-        ":authority" => authority,
-        ":scheme" => scheme,
-      })
+      #appjs = stream.send_push_promise(HTTP::Headers{
+      #  ":method" => "GET",
+      #  ":path" => "/javascripts/application.js",
+      #  ":authority" => authority,
+      #  ":scheme" => scheme,
+      #  "content-type" => "application/javascript",
+      #})
+      #favicon = stream.send_push_promise(HTTP::Headers{
+      #  ":method" => "GET",
+      #  ":path" => "/favicon.ico",
+      #  ":authority" => authority,
+      #  ":scheme" => scheme,
+      #})
 
       status, headers, body = handle_request(request)
       headers[":status"] = status
@@ -218,16 +218,16 @@ module HTTP2
         stream.send_data("", Frame::Flags::END_STREAM)
       end
 
-      if appjs && appjs.try(&.state) != Stream::State::CLOSED
-        appjs.send_headers(HTTP::Headers{
-           ":status" => "200",
-           "content-type" => "application/javascript",
-        })
-        appjs.send_data("(function () { console.log('server push!'); }());", Frame::Flags::END_STREAM)
-      end
-      if favicon && favicon.try(&.state) != Stream::State::CLOSED
-        favicon.send_headers(HTTP::Headers{ ":status" => "404" }, Frame::Flags::END_STREAM)
-      end
+      #if appjs && appjs.try(&.state) != Stream::State::CLOSED
+      #  appjs.send_headers(HTTP::Headers{
+      #     ":status" => "200",
+      #     "content-type" => "application/javascript",
+      #  })
+      #  appjs.send_data("(function () { console.log('server push!'); }());", Frame::Flags::END_STREAM)
+      #end
+      #if favicon && favicon.try(&.state) != Stream::State::CLOSED
+      #  favicon.send_headers(HTTP::Headers{ ":status" => "404" }, Frame::Flags::END_STREAM)
+      #end
     ensure
       stream.data.close
     end

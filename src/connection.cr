@@ -72,8 +72,8 @@ module HTTP2
         rescue Channel::ClosedError
           break
         rescue ex
-          logger.debug { "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join('\n')}" }
-          #logger.debug { "#{ex.class.name} #{ex.message}" }
+          #logger.debug { "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join('\n')}" }
+          logger.debug { "ERROR: #{ex.class.name} #{ex.message}" }
         end
       end
     end
@@ -151,6 +151,7 @@ module HTTP2
               hpack_decoder.decode(buf, stream.headers)
             end
           rescue ex : HPACK::Error
+            logger.debug { "HPACK::Error: #{ex.message}" }
             raise Error.compression_error
           end
 
