@@ -50,6 +50,7 @@ module HTTP2
     getter id : Int32
     getter state : State
     property priority : Priority
+    getter? window_size : Int32?
     private getter connection : Connection
 
     def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state : State = State::IDLE)
@@ -87,6 +88,13 @@ module HTTP2
 
     def ==(other)
       false
+    end
+
+    def increment_window_size(increment)
+      current = window_size? || 0
+      if current.to_i64 + increment <= MAXIMUM_WINDOW_SIZE
+        @window_size = current + increment
+      end
     end
 
     def send_priority
@@ -239,6 +247,8 @@ module HTTP2
           end
         when Frame::Type::RST_STREAM
           self.state = State::CLOSED
+        when Frame::Type::WINDOW_UPDATE
+          # ignore
         else
           error!(receiving)
         end
@@ -270,7 +280,11 @@ module HTTP2
         when Frame::Type::WINDOW_UPDATE, Frame::Type::RST_STREAM
           # ignore
         else
-          error!(receiving)
+          if receiving
+            raise Error.stream_closed("STREAM #{id} is #{state}")
+          else
+            raise Error.internal_error("STREAM #{id} is #{state}")
+          end
         end
       end
     end
