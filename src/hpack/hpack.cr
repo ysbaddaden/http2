@@ -81,18 +81,18 @@ module HTTP2
       end
 
       protected def integer(n)
-        integer = reader.read_byte & (0xff >> (8 - n))
+        integer = (reader.read_byte & (0xff >> (8 - n))).to_i
         n2 = 2 ** n - 1
-        return integer.to_i if integer < n2
+        return integer if integer < n2
 
         loop do |m|
           # TODO: raise if integer grows over limit
           byte = reader.read_byte
-          integer = integer + (byte & 127) * 2 ** (m * 7)
-          break unless byte.bit(7) == 1
+          integer += (byte & 127).to_i * (2 ** (m * 7))
+          break unless byte & 128 == 128
         end
 
-        integer.to_i
+        integer
       end
 
       protected def string
