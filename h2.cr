@@ -1,8 +1,8 @@
 require "http/request"
+require "http/server"
 require "logger"
 require "socket"
 require "./src/http2"
-require "./src/core_ext/openssl"
 
 class HTTP::Request
   def initialize(@method : String, @resource : String, @headers : Headers, @version = "HTTP/2.0")
@@ -126,9 +126,13 @@ module HTTP2
       elsif protocol.starts_with?("HTTP/")
         handle_http1_connection(socket, method, resource, protocol)
       end
+    rescue ex : OpenSSL::SSL::Error
+      logger.debug { "#{ex.class.name}: #{ex.message}" }
     rescue ex
       logger.debug { "#{ex.class.name}: #{ex.message}\n#{ex.backtrace.join('\n')}" }
+      #logger.debug { "#{ex.class.name}: #{ex.message}" }
     ensure
+      # FIXME: OpenSSL::SSL::Socket is missing a closed? method
       socket.close #unless socket.closed?
     end
 
@@ -338,14 +342,15 @@ module HTTP2
       {"200", headers, body}
     end
 
+    @ssl_context : OpenSSL::SSL::Context?
+
     private def ssl_context
-      @ssl_context ||= OpenSSL::SSL::Context.new(LibSSL.tlsv1_2_method) do |ctx|
-        ctx.options = LibSSL::SSL_OP_NO_SSLv2 | LibSSL::SSL_OP_NO_SSLv3 | LibSSL::SSL_OP_CIPHER_SERVER_PREFERENCE
-        ctx.ciphers = HTTP2::TLS_CIPHERS
-        ctx.set_tmp_ecdh_key(curve: LibSSL::NID_X9_62_prime256v1)
+      @ssl_context ||= begin
+        ctx = HTTP::Server.default_ssl_context
         ctx.alpn_protocol = "h2"
         ctx.certificate_chain = ssl_path(:crt)
         ctx.private_key = ssl_path(:key)
+        ctx
       end
     end
 

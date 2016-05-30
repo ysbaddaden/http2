@@ -1,26 +1,4 @@
 module HTTP2
-  TLS_CIPHERS = %w(
-    EECDH+ECDSA+AESGCM
-    EECDH+aRSA+AESGCM
-    EECDH+ECDSA+SHA384
-    EECDH+ECDSA+SHA256
-    EECDH+aRSA+SHA384
-    EECDH+aRSA+SHA256
-    EECDH+aRSA+RC4
-    EECDH
-    EDH+aRSA
-    RC4
-    !aNULL
-    !eNULL
-    !LOW
-    !3DES
-    !MD5
-    !EXP
-    !PSK
-    !SRP
-    !DSS
-  ).join(' ')
-
   CLIENT_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 
   MINIMUM_FRAME_SIZE = (2 ** 14).to_i32
