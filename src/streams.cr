@@ -8,6 +8,7 @@ module HTTP2
       @streams = {} of Int32 => Stream
       @id_counter = 0
       @mutex = Mutex.new
+      @highest_remote_id = 0
     end
 
     # Finds an incoming stream, silently creating it if it doesn't exist yet.
@@ -18,13 +19,18 @@ module HTTP2
             raise Error.refused_stream("MAXIMUM capacity reached")
           end
         end
-        @streams[id] ||= Stream.new(@connection, id)
+        if id > @highest_remote_id
+          @highest_remote_id = id
+        end
+        @streams[id] ||= begin
+          Stream.new(@connection, id)
+        end
       end
     end
 
     # Returns true if the incoming stream id is valid for the current connection.
     def valid?(id)
-      id == 0 || (id % 2) == 1
+      id == 0 || ((id % 2) == 1 && id >= @highest_remote_id)
     end
 
     # Creates an outgoing stream.
