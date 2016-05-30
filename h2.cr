@@ -3,83 +3,13 @@ require "http/server"
 require "logger"
 require "socket"
 require "./src/http2"
+require "./src/io/hexdump"
 
 class HTTP::Request
   def initialize(@method : String, @resource : String, @headers : Headers, @version = "HTTP/2.0")
     # NOTE: the original constructor always resets Content-Length to "0",
     #       this is nice for outgoing requests, but it breaks received requests
     #       with a streaming body!
-  end
-end
-
-class IO::Hexdump
-  include IO
-
-  def initialize(@io : IO, @logger : Logger|Logger::Dummy)
-  end
-
-  def read(buf : Slice(UInt8))
-    @io.read(buf).tap do |ret|
-      offset = 0
-      line = MemoryIO.new(48)
-
-      message = String.build do |str|
-        buf.each_with_index do |byte, index|
-          if index > 0
-            if index % 16 == 0
-              str.print line.to_s
-              hexdump(buf, offset, str)
-              str.print '\n'
-              line = MemoryIO.new(48)
-            elsif index % 8 == 0
-              line.print "  "
-            else
-              line.print ' '
-            end
-          end
-
-          s = byte.to_s(16)
-          line.print '0' if s.size == 1
-          line.print s
-
-          offset = index
-        end
-
-        if line.pos > 0
-          str.print line.to_s
-          (48 - line.pos).times { str.print ' ' }
-          hexdump(buf, offset, str)
-        end
-      end
-
-      @logger.debug(message)
-    end
-  end
-
-  def write(buf : Slice(UInt8))
-    @io.write(buf)
-  end
-
-  def closed?
-    @io.closed?
-  end
-
-  def close
-    @io.close
-  end
-
-  private def hexdump(buf, offset, str)
-    str.print "  |"
-
-    buf[offset - 8 < 0 ? 0 : offset - 8, (offset % 8) + 1].each do |byte|
-      if 31 < byte < 127
-        str.print byte.chr
-      else
-        str.print '.'
-      end
-    end
-
-    str.print '|'
   end
 end
 
@@ -113,7 +43,7 @@ module HTTP2
         socket = OpenSSL::SSL::Socket.new(socket, :server, ssl_context)
       end
 
-      socket = IO::Hexdump.new(socket, logger)
+      socket = IO::Hexdump.new(socket, logger, write: false)
 
       if line = socket.gets
         method, resource, protocol = line.split
