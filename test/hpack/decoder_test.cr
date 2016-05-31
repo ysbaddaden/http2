@@ -157,6 +157,31 @@ module HTTP2::HPACK
       skip
     end
 
+    def test_large_integer_literal
+      bytes = Slice(UInt8).new(3 + 3 + 4096) { '.'.ord.to_u8 }
+      bytes[0] = 0x00_u8
+      bytes[1] = 0x01_u8
+      bytes[2] = 'x'.ord.to_u8
+      bytes[3] = 0x7f_u8
+      bytes[4] = 0x81_u8
+      bytes[5] = 0x1f_u8
+
+      headers = d.decode(bytes)
+      assert_equal "." * 4096, headers["x"]
+    end
+
+    def test_edge_integer_literal
+      bytes = Slice(UInt8).new(3 + 2 + 127) { '.'.ord.to_u8 }
+      bytes[0] = 0x00_u8
+      bytes[1] = 0x01_u8
+      bytes[2] = 'x'.ord.to_u8
+      bytes[3] = 0x7f_u8
+      bytes[4] = 0x00_u8
+
+      headers = d.decode(bytes)
+      assert_equal "." * 127, headers["x"]
+    end
+
     def slice(*bytes)
       Slice(UInt8).new(bytes.size) { |i| bytes[i].to_u8 }
     end

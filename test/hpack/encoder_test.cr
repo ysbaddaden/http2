@@ -43,6 +43,19 @@ module HTTP2::HPACK
       assert_empty e.table
     end
 
+    def test_large_integer_literal
+      bytes = e.encode(HTTP::Headers{ "x-dummy1" => "." * 4096 }, Indexing::NONE, huffman: false)
+      assert_equal slice(0x00, 0x08, 'x'.ord, '-'.ord, 'd'.ord, 'u'.ord, 'm'.ord, 'm'.ord, 'y'.ord, '1'.ord), bytes[0, 10]
+      assert_equal slice(0x7f, 0x81, 0x1f), bytes[10, 3]
+      assert_equal ("." * 4096).to_slice, bytes[13, bytes.size - 13]
+    end
+
+    def test_edge_integer_literal
+      bytes = e.encode(HTTP::Headers{ "x-dummy1" => "." * 127 }, Indexing::NONE, huffman: false)
+      assert_equal slice(0x7f, 0x00), bytes[10, 2]
+      assert_equal ("." * 127).to_slice, bytes[12, bytes.size - 12]
+    end
+
     def test_always_encodes_special_headers_first
       e = Encoder.new(indexing: Indexing::ALWAYS, huffman: false)
       headers = HTTP::Headers{

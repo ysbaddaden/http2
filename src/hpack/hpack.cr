@@ -190,7 +190,7 @@ module HTTP2
       protected def integer(integer : Int32, n, prefix = 0_u8)
         n2 = 2 ** n - 1
 
-        if integer <= n2
+        if integer < n2
           writer.write_byte(integer.to_u8 | prefix.to_u8)
           return
         end
