@@ -15,10 +15,10 @@ end
 
 module HTTP2
   class Server
-    def initialize(host = "::", port = 9292, ssl = true)
+    def initialize(host = "::", port = 9292, tls = true)
       TCPServer.open(host, port) do |server|
         loop do
-          spawn handle_connection(server.accept, ssl)
+          spawn handle_connection(server.accept, tls)
         end
       end
     end
@@ -38,12 +38,12 @@ module HTTP2
       @logger = logger
     end
 
-    def handle_connection(socket, ssl = true)
-      if ssl
-        socket = OpenSSL::SSL::Socket.new(socket, :server, ssl_context)
+    def handle_connection(socket, tls = true)
+      if tls
+        socket = OpenSSL::SSL::Socket::Server.new(socket, tls_context)
       end
 
-      socket = IO::Hexdump.new(socket, logger, write: false)
+      #socket = IO::Hexdump.new(socket, logger, write: false)
 
       if line = socket.gets
         method, resource, protocol = line.split
@@ -272,19 +272,19 @@ module HTTP2
       {"200", headers, body}
     end
 
-    @ssl_context : OpenSSL::SSL::Context?
+    @tls_context : OpenSSL::SSL::Context::Server?
 
-    private def ssl_context
-      @ssl_context ||= begin
-        ctx = HTTP::Server.default_ssl_context
+    private def tls_context
+      @tls_context ||= begin
+        ctx = OpenSSL::SSL::Context::Server.new
         ctx.alpn_protocol = "h2"
-        ctx.certificate_chain = ssl_path(:crt)
-        ctx.private_key = ssl_path(:key)
+        ctx.certificate_chain = tls_path(:crt)
+        ctx.private_key = tls_path(:key)
         ctx
       end
     end
 
-    private def ssl_path(extname)
+    private def tls_path(extname)
       File.join("ssl", "server.#{extname}")
     end
   end

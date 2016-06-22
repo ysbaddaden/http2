@@ -48,7 +48,7 @@ module HTTP2
     end
 
     private def active_count(type)
-      @streams.reduce(0) do |count, _, stream|
+      @streams.reduce(0) do |count, (_, stream)|
         if stream.id == 0 || stream.id % 2 == type && stream.active?
           count + 1
         else

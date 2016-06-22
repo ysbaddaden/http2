@@ -64,7 +64,7 @@ module HTTP2
     end
 
     def parse(bytes : Slice(UInt8))
-      parse(MemoryIO.new(bytes), bytes.size / 6) { yield }
+      parse(MemoryIO.new(bytes), bytes.size / 6) { |id, value| yield id, value }
     end
 
     def parse(io, size)
