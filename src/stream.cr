@@ -50,10 +50,11 @@ module HTTP2
     getter id : Int32
     getter state : State
     property priority : Priority
-    getter? window_size : Int32?
+    getter window_size : Int32
     private getter connection : Connection
 
     def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state : State = State::IDLE)
+      @window_size = connection.remote_settings.initial_window_size
     end
 
     def active?
@@ -91,10 +92,18 @@ module HTTP2
     end
 
     def increment_window_size(increment)
-      current = window_size? || 0
-      if current.to_i64 + increment <= MAXIMUM_WINDOW_SIZE
-        @window_size = current + increment
+      if window_size.to_i64 + increment <= MAXIMUM_WINDOW_SIZE
+        @window_size += increment
+
+        if fiber = @fiber
+          # resume fiber waiting to send data
+          fiber.resume
+        end
       end
+    end
+
+    private def consume_window_size(frame)
+      @window_size -= frame.payload.size
     end
 
     def send_priority
@@ -160,16 +169,29 @@ module HTTP2
       frame = Frame.new(Frame::Type::DATA, self, Frame::Flags.new(flags.to_u8))
       max_frame_size = connection.remote_settings.max_frame_size
 
-      if data.size <= max_frame_size
+      if data.size <= max_frame_size && data.size <= window_size
         frame.payload = data
+        consume_window_size(frame)
         connection.send(frame)
       else
         offset = 0
         while offset < data.size
-          count = offset + max_frame_size > data.size ? data.size : max_frame_size
-          frame.payload = data[offset, count]
-          connection.send(frame)
-          offset += count
+          if window_size < 1
+            # block fiber until we can send data
+            @fiber = Fiber.current
+            Scheduler.reschedule
+            @fiber = nil
+          end
+
+          frame_size = window_size < max_frame_size ? window_size : max_frame_size
+          count = offset + frame_size > data.size ? data.size : frame_size
+
+          if count > 0
+            frame.payload = data[offset, count]
+            consume_window_size(frame)
+            connection.send(frame)
+            offset += count
+          end
 
           # OPTIMIZE: maybe we should sleep(0) here, in order to give other
           # coroutines a chance to send frames? so we can take advantage of
@@ -177,6 +199,8 @@ module HTTP2
         end
       end
       nil
+    ensure
+      @fiber = nil
     end
 
     def send_rst_stream(error_code : Error::Code)
