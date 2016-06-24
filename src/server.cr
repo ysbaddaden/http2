@@ -309,10 +309,10 @@ class HTTP::Server
 
   protected def handle_http2_request(stream, request)
     puts "=========> HTTP/2 REQUEST (STREAM #{stream.id}) <========="
-    p request
-    #response = HTTP2::Response.new(stream, request.version)
-    #context = Context.new(request, response, stream)
-    #@handler.call(context)
+    response = Response.new(stream, request.version)
+    context = Context.new(request, response, stream)
+    @handler.call(context)
+    response.close
   end
 
   protected def validate_http2_headers(headers)
