@@ -24,6 +24,10 @@ class IO::Hexdump
     @io.close
   end
 
+  def flush
+    @io.flush
+  end
+
   private def hexdump(buf)
     offset = 0
     line = MemoryIO.new(48)

@@ -1,10 +1,11 @@
+require "colorize"
+require "logger"
 require "./config"
 require "./errors"
 require "./frame"
 require "./hpack"
 require "./settings"
 require "./streams"
-require "colorize"
 
 class Logger::Dummy
   {% for name in Logger::Severity.constants %}
@@ -58,15 +59,16 @@ module HTTP2
       loop do
         begin
           # OPTIMIZE: follow stream priority to send frames
-          # TODO: respect flow-control (don't push DATA frames until window size is sufficient).
           if frame = @channel.receive
             case frame
             when Array
-              frame.each { |f| write(f) }
+              frame.each { |f| write(f, flush: false) }
+              io.flush
             else
               write(frame)
             end
           else
+            io.close unless io.closed?
             break
           end
         rescue Channel::ClosedError
@@ -96,8 +98,8 @@ module HTTP2
 
     def read_client_preface(truncated = false)
       if truncated
-        io.read_fully(buf = Slice(UInt8).new(8))
-        raise Error.protocol_error("PREFACE expected") unless String.new(buf) == CLIENT_PREFACE[-8, 8]
+        io.read_fully(buf = Slice(UInt8).new(6))
+        raise Error.protocol_error("PREFACE expected") unless String.new(buf) == CLIENT_PREFACE[-6, 6]
       else
         io.read_fully(buf = Slice(UInt8).new(24))
         raise Error.protocol_error("PREFACE expected") unless String.new(buf) == CLIENT_PREFACE
@@ -201,14 +203,14 @@ module HTTP2
           remote_settings.parse(io, frame.size / 6) do |settings, value|
             logger.debug { "  #{settings}=#{value}" }
           end
-          write Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
+          send Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
         end
 
       when Frame::Type::PING
         raise Error.protocol_error unless stream.id == 0
         raise Error.frame_size_error unless frame.size == PING_FRAME_SIZE
         io.read_fully(buf = Slice(UInt8).new(frame.size))
-        write Frame.new(Frame::Type::PING, streams.find(0), 1, buf) unless frame.flags.ack?
+        send Frame.new(Frame::Type::PING, streams.find(0), 1, buf) unless frame.flags.ack?
 
       when Frame::Type::GOAWAY
         _, last_stream_id = read_stream_id
@@ -322,10 +324,10 @@ module HTTP2
     end
 
     def write_settings
-      write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), 0, local_settings.to_payload)
+      send Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), 0, local_settings.to_payload)
     end
 
-    protected def write(frame : Frame)
+    private def write(frame : Frame, flush = true)
       size = frame.payload?.try(&.size.to_u32) || 0_u32
       stream = frame.stream
 
@@ -339,13 +341,17 @@ module HTTP2
       if payload = frame.payload?
         io.write(payload) if payload.size > 0
       end
+
+      if flush
+        io.flush #unless io.sync?
+      end
     end
 
     def close(error = nil, notify = true)
       return if closed?
       @closed = true
 
-      #unless io.closed?
+      unless io.closed?
         if notify
           if error
             message, code = error.message || "", error.code
@@ -356,10 +362,10 @@ module HTTP2
           payload.write_bytes(streams.last_stream_id.to_u32, IO::ByteFormat::BigEndian)
           payload.write_bytes(code.to_u32, IO::ByteFormat::BigEndian)
           payload << message
+
           write Frame.new(Frame::Type::GOAWAY, streams.find(0), 0, payload.to_slice)
         end
-        io.close
-      #end
+      end
 
       unless @channel.closed?
         @channel.send(nil)
