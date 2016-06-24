@@ -6,7 +6,7 @@ require "http/server/handler"
 require "./connection"
 require "./server/context"
 require "./server/response"
-require "./io/hexdump"
+#require "./io/hexdump"
 
 # An HTTP server.
 #
@@ -93,6 +93,14 @@ require "./io/hexdump"
 class HTTP::Server
   ifdef !without_openssl
     property tls : OpenSSL::SSL::Context::Server?
+
+    # Returns the default OpenSSL context, suitable for HTTP2, with ALPN
+    # protocol negotiation.
+    def self.default_tls_context : OpenSSL::SSL::Context::Server
+      tls_context = OpenSSL::SSL::Context::Server.new
+      tls_context.alpn_protocol = "h2"
+      tls_context
+    end
   end
 
   @wants_close = false
@@ -171,9 +179,13 @@ class HTTP::Server
 
     io.sync = false
 
+    alpn = nil
     ifdef !without_openssl
       if tls = @tls
         io = OpenSSL::SSL::Socket::Server.new(io, tls, sync_close: true)
+        {% if LibSSL::OPENSSL_102 %}
+        alpn = io.alpn_protocol
+        {% end %}
       end
     end
 
@@ -184,6 +196,11 @@ class HTTP::Server
 
     begin
       until @wants_close
+        if alpn == "h2"
+          handle_http2_client(io)
+          return
+        end
+
         begin
           request = HTTP::Request.from_io(io)
         rescue e
@@ -197,7 +214,7 @@ class HTTP::Server
           return
         end
 
-        if request.version == "HTTP/2.0" && request.method == "PRI" && request.resource == "*"
+        if request.method == "PRI" && request.resource == "*" && request.version == "HTTP/2.0"
           handle_http2_client(io)
           return
         end
@@ -254,7 +271,7 @@ class HTTP::Server
       end
     end
 
-    connection.read_client_preface(truncated: request == nil)
+    connection.read_client_preface(truncated: !@tls && request == nil)
     connection.write_settings
 
     frame = connection.receive
