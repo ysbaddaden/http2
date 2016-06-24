@@ -124,8 +124,8 @@ module HTTP2
       end
 
       def encode(headers : HTTP::Headers, indexing = default_indexing, huffman = default_huffman, @writer = MemoryIO.new)
-        headers.each { |name, values| encode(name, values, indexing, huffman) if name.starts_with?(':') }
-        headers.each { |name, values| encode(name, values, indexing, huffman) unless name.starts_with?(':') }
+        headers.each { |name, values| encode(name.downcase, values, indexing, huffman) if name.starts_with?(':') }
+        headers.each { |name, values| encode(name.downcase, values, indexing, huffman) unless name.starts_with?(':') }
         writer.to_slice
       end
 
