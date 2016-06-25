@@ -313,14 +313,7 @@ class HTTP::Server
 
   rescue err : HTTP2::Error
     if connection
-      begin
-        connection.close(error: err) unless connection.closed?
-      rescue HTTP2::Error
-        # FIXME: impossible, but required because the *outer rescue* won't stop
-        #        the exception from bubbling up sometimes. To reproduce:
-        #
-        #        h2spec -s 5.1.2
-      end
+      connection.close(error: err) unless connection.closed?
     end
     logger.debug { "#{err.code}: #{err.message}" }
 

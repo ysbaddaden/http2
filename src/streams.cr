@@ -14,15 +14,15 @@ module HTTP2
     # Finds an incoming stream, silently creating it if it doesn't exist yet.
     def find(id)
       @mutex.synchronize do
-        if max = @connection.local_settings.max_concurrent_streams
-          if active_count(1) >= max
-            raise Error.refused_stream("MAXIMUM capacity reached")
-          end
-        end
-        if id > @highest_remote_id
-          @highest_remote_id = id
-        end
         @streams[id] ||= begin
+          if max = @connection.local_settings.max_concurrent_streams
+            if active_count(1) >= max
+              raise Error.refused_stream("MAXIMUM capacity reached")
+            end
+          end
+          if id > @highest_remote_id
+            @highest_remote_id = id
+          end
           Stream.new(@connection, id)
         end
       end
