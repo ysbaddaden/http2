@@ -6,7 +6,7 @@ require "http/server/handler"
 require "./connection"
 require "./server/context"
 require "./server/response"
-#require "./io/hexdump"
+require "./io/hexdump"
 
 # An HTTP server.
 #
@@ -179,7 +179,9 @@ class HTTP::Server
 
     io.sync = false
 
+    must_close = true
     alpn = nil
+
     ifdef !without_openssl
       if tls = @tls
         io = OpenSSL::SSL::Socket::Server.new(io, tls, sync_close: true)
@@ -189,18 +191,17 @@ class HTTP::Server
       end
     end
 
-    #io = IO::Hexdump.new(io, logger, write: false)
+    io = IO::Hexdump.new(io, logger, write: false)
 
-    must_close = true
+    if alpn == "h2"
+      handle_http2_client(io)
+      return
+    end
+
     response = Response.new(io)
 
     begin
       until @wants_close
-        if alpn == "h2"
-          handle_http2_client(io)
-          return
-        end
-
         begin
           request = HTTP::Request.from_io(io)
         rescue e
@@ -208,7 +209,7 @@ class HTTP::Server
           e.inspect_with_backtrace(STDERR)
         end
 
-        unless request
+        unless request.is_a?(Request)
           response.respond_with_error("Bad Request", 400)
           response.close
           return
