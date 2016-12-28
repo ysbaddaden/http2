@@ -110,7 +110,7 @@ module HTTP2
       exclusive = priority.exclusive ? 0x80000000_u32 : 0_u32
       dep_stream_id = priority.dep_stream_id.to_u32 & 0x7fffffff_u32
 
-      io = MemoryIO.new
+      io = IO::Memory.new
       io.write_bytes(exclusive | dep_stream_id, IO::ByteFormat::BigEndian)
       io.write_byte((priority.weight - 1).to_u8)
       io.rewind
@@ -127,7 +127,7 @@ module HTTP2
       return unless connection.remote_settings.enable_push
 
       connection.streams.create(state: Stream::State::RESERVED_LOCAL).tap do |stream|
-        io = MemoryIO.new
+        io = IO::Memory.new
         io.write_bytes(stream.id.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)
         payload = connection.hpack_encoder.encode(headers, writer: io)
         send_headers(Frame::Type::PUSH_PROMISE, headers, Frame::Flags.new(flags.to_u8), payload)
@@ -204,7 +204,7 @@ module HTTP2
     end
 
     def send_rst_stream(error_code : Error::Code)
-      io = MemoryIO.new
+      io = IO::Memory.new
       io.write_bytes(error_code.value.to_u32, IO::ByteFormat::BigEndian)
       io.rewind
       connection.send Frame.new(Frame::Type::RST_STREAM, self, 0, io.to_slice)

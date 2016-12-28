@@ -112,7 +112,7 @@ module HTTP2
       # TODO: allow per header name/value indexing configuration
       # TODO: allow per header name/value huffman encoding configuration
 
-      private getter! writer : MemoryIO
+      private getter! writer : IO::Memory
       getter table : DynamicTable
       property default_indexing : Indexing
       property default_huffman : Bool
@@ -123,7 +123,7 @@ module HTTP2
         @table = DynamicTable.new(max_table_size)
       end
 
-      def encode(headers : HTTP::Headers, indexing = default_indexing, huffman = default_huffman, @writer = MemoryIO.new)
+      def encode(headers : HTTP::Headers, indexing = default_indexing, huffman = default_huffman, @writer = IO::Memory.new)
         headers.each { |name, values| encode(name.downcase, values, indexing, huffman) if name.starts_with?(':') }
         headers.each { |name, values| encode(name.downcase, values, indexing, huffman) unless name.starts_with?(':') }
         writer.to_slice

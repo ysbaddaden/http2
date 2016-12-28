@@ -59,7 +59,7 @@ module HTTP2
       end
 
       def decode(bytes : Slice(UInt8))
-        io = MemoryIO.new
+        io = IO::Memory.new
         node = tree
 
         bytes.each do |byte|

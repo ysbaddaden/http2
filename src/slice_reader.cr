@@ -32,7 +32,7 @@ module HTTP2
           end
         {% end %}
 
-        (buffer.to_unsafe as Pointer({{ type.id }})).value
+        buffer.to_unsafe.as(Pointer({{ type.id }})).value
       end
     {% end %}
 

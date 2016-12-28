@@ -358,7 +358,7 @@ module HTTP2
           else
             message, code = "", Error::Code::NO_ERROR
           end
-          payload = MemoryIO.new(8 + message.bytesize)
+          payload = IO::Memory.new(8 + message.bytesize)
           payload.write_bytes(streams.last_stream_id.to_u32, IO::ByteFormat::BigEndian)
           payload.write_bytes(code.to_u32, IO::ByteFormat::BigEndian)
           payload << message

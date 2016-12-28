@@ -1,4 +1,6 @@
-require "openssl" ifdef !without_openssl
+{% unless flag?(:without_openssl) %}
+  require "openssl"
+{% end %}
 require "base64"
 require "socket"
 require "http/common"
@@ -91,7 +93,7 @@ require "./io/hexdump"
 # server.listen
 # ```
 class HTTP::Server
-  ifdef !without_openssl
+  {% unless flag?(:without_openssl) %}
     property tls : OpenSSL::SSL::Context::Server?
 
     # Returns the default OpenSSL context, suitable for HTTP2, with ALPN
@@ -101,7 +103,7 @@ class HTTP::Server
       tls_context.alpn_protocol = "h2"
       tls_context
     end
-  end
+  {% end %}
 
   @wants_close = false
 
@@ -182,14 +184,14 @@ class HTTP::Server
     must_close = true
     alpn = nil
 
-    ifdef !without_openssl
+    {% unless flag?(:without_openssl) %}
       if tls = @tls
         io = OpenSSL::SSL::Socket::Server.new(io, tls, sync_close: true)
         {% if LibSSL::OPENSSL_102 %}
         alpn = io.alpn_protocol
         {% end %}
       end
-    end
+    {% end %}
 
     io = IO::Hexdump.new(io, logger, write: false)
 

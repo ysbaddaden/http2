@@ -30,7 +30,7 @@ class IO::Hexdump
 
   private def hexdump(buf)
     offset = 0
-    line = MemoryIO.new(48)
+    line = IO::Memory.new(48)
 
     String.build do |str|
       buf.each_with_index do |byte, index|
@@ -39,7 +39,7 @@ class IO::Hexdump
             str.print line.to_s
             hexdump(buf, offset - 15, str)
             str.print '\n'
-            line = MemoryIO.new(48)
+            line = IO::Memory.new(48)
           elsif index % 8 == 0
             line.print "  "
           else

@@ -64,7 +64,7 @@ module HTTP2
     end
 
     def parse(bytes : Slice(UInt8))
-      parse(MemoryIO.new(bytes), bytes.size / 6) { |id, value| yield id, value }
+      parse(IO::Memory.new(bytes), bytes.size / 6) { |id, value| yield id, value }
     end
 
     def parse(io, size)
@@ -97,7 +97,7 @@ module HTTP2
 
     def to_payload
       payload = Slice(UInt8).new(size * 6)
-      io = MemoryIO.new(payload)
+      io = IO::Memory.new(payload)
 
       {% for name in Identifier.constants %}
         if value = @{{ name.underscore }}
