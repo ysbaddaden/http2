@@ -1,305 +1,130 @@
-class HTTP::Server
-  # The response to configure and write to in an `HTTP::Server` handler.
-  #
-  # The response `status_code` and `headers` must be configured before writing
-  # the response body. Once response output is written, changing the `status`
-  # and `headers` properties has no effect.
-  #
-  # The `HTTP::Server::Response` is a write-only `IO`, so all `IO` methods are available
-  # in it.
-  #
-  # A response can be upgraded with the `upgrade` method. Once invoked, headers
-  # are written and the connection `IO` (a socket) is yielded to the given block.
-  # The block must invoke `close` afterwards, the server won't do it in this case.
-  # This is useful to implement protocol upgrades, such as websockets.
-  class Response
-    include IO
+# Overloads HTTP::Reponse to support HTTP/2 streams along with HTTP/1
+# connections.
+class HTTP::Server::Response
+  @io : IO?                # HTTP/1
+  @stream : HTTP2::Stream? # HTTP/2
 
-    # The response headers (`HTTP::Headers`). These must be set before writing to the response.
-    getter headers : HTTP::Headers
+  # :nodoc:
+  def initialize(io : IO, @version = "HTTP/1.1")
+    @io = io
+    @headers = Headers.new
+    @status_code = 200
+    @wrote_headers = false
+    @upgraded = false
+    @output = output = @original_output = Output.new(io)
+    output.response = self
+  end
 
-    # The version of the HTTP::Request that created this response.
-    getter version : String
+  # :nodoc:
+  def initialize(stream : HTTP2::Stream, @version = "HTTP/2.0")
+    @stream = stream
+    @headers = Headers.new
+    @status_code = 200
+    @wrote_headers = false
+    @upgraded = false
+    @output = output = @original_output = StreamOutput.new(stream)
+    output.response = self
+  end
 
-    # The `IO` to which output is written. This can be changed/wrapped to filter
-    # the response body (for example to compress the output).
-    property output : IO
+  def http1?
+    @stream.nil?
+  end
 
-    # :nodoc:
-    setter version : String
+  def http2?
+    @io.nil?
+  end
 
-    # The status code of this response, which must be set before writing the response
-    # body. If not set, the default value is 200 (OK).
-    property status_code : Int32
-
-    # HTTP/1
-    @io : IO?
-
-    # HTTP/2
-    @stream : HTTP2::Stream?
-
-    # :nodoc:
-    def initialize(io : IO, @version = "HTTP/1.1")
-      @io = io
-      @headers = Headers.new
-      @status_code = 200
-      @wrote_headers = false
-      @upgraded = false
-      @output = output = @original_output = Output.new(io)
-      output.response = self
-    end
-
-    # :nodoc:
-    def initialize(stream : HTTP2::Stream, @version = "HTTP/2.0")
-      @stream = stream
-      @headers = Headers.new
-      @status_code = 200
-      @wrote_headers = false
-      @upgraded = false
-      @output = output = @original_output = StreamOutput.new(stream)
-      output.response = self
-    end
-
-    # :nodoc:
-    def reset
-      @headers.clear
-      @cookies = nil
-      @status_code = 200
-      @wrote_headers = false
-      @upgraded = false
-      @output = @original_output
-      @original_output.reset
-    end
-
-    # Convenience method to set the `Content-Type` header.
-    def content_type=(content_type : String)
-      headers["Content-Type"] = content_type
-    end
-
-    # Convenience method to set the `Content-Length` header.
-    def content_length=(content_length : Int)
-      headers["Content-Length"] = content_length.to_s
-    end
-
-    # See `IO#write(slice)`.
-    def write(slice : Slice(UInt8))
-      @output.write(slice)
-    end
-
-    # Convenience method to set cookies, see `HTTP::Cookies`.
-    def cookies
-      @cookies ||= HTTP::Cookies.new
-    end
-
-    # :nodoc:
-    def read(slice : Slice(UInt8))
-      raise "can't read from HTTP::Server::Response"
-    end
-
-    # Upgrades this response, writing headers and yieling the connection `IO` (a socket) to the given block.
-    # The block must invoke `close` afterwards, the server won't do it in this case.
-    # This is useful to implement protocol upgrades, such as websockets.
-    def upgrade(upgrade = nil, @status_code = 101)
-      raise "can't upgrade HTTP/2 connection" unless io = @io
-      headers["Upgrade"] = upgrade if upgrade
-      headers["Connection"] = "Upgrade"
+  # NOTE: HTTP/2 connections can't be upgraded.
+  def upgrade(upgrade = nil, @status_code = 101)
+    if io = @io
       @upgraded = true
+      headers["Connection"] = "Upgrade"
+      headers["Upgrade"] = upgrade if upgrade
       write_headers
       flush
       yield io
+    else
+      raise "unexpected connection upgrade for #{@version}"
     end
+  end
 
-    # :nodoc:
-    def upgraded?
-      @upgraded
-    end
-
-    # Flushes the output. This method must be implemented if wrapping the response output.
-    def flush
-      @output.flush
-    end
-
-    # Closes this response, writing headers and body if not done yet.
-    # This method must be implemented if wrapping the response output.
-    def close
-      @output.close
-    end
-
-    # Generates an error response using *message* and *code*.
-    #
-    # Calls `reset` and then writes the given message.
-    def respond_with_error(message = "Internal Server Error", code = 500)
-      reset
-      @status_code = code
-      self.content_type = "text/plain"
-      self << code << ' ' << message << '\n'
-      flush
-    end
-
-    protected def write_headers
-      if io = @io
-        # HTTP/1
-        status_message = HTTP.default_status_message_for(@status_code)
-        io << @version << " " << @status_code << " " << status_message << "\r\n"
-        headers.each do |name, values|
-          values.each do |value|
-            io << name << ": " << value << "\r\n"
-          end
+  protected def write_headers
+    if io = @io
+      # HTTP/1
+      status_message = HTTP.default_status_message_for(@status_code)
+      io << @version << " " << @status_code << " " << status_message << "\r\n"
+      headers.each do |name, values|
+        values.each do |value|
+          io << name << ": " << value << "\r\n"
         end
-        io << "\r\n"
-      else
-        # HTTP/2
-        raise "unexpected call to write_headers for #{@version}"
+      end
+      io << "\r\n"
+    else
+      # HTTP/2
+      raise "unexpected call to write_headers for #{@version}"
+    end
+    @wrote_headers = true
+  end
+
+  # :nodoc:
+  # TODO: cap IO buffer to connection's max_frame_size setting (e.g. 16KB)
+  class StreamOutput
+    include IO::Buffered
+
+    property! response : Response
+
+    def initialize(@stream : HTTP2::Stream)
+      @in_buffer_rem = Slice.new(Pointer(UInt8).null, 0)
+      @out_count = 0
+      @sync = false
+      @flush_on_newline = false
+      @wrote_headers = false
+    end
+
+    def reset
+      raise "can't reset HTTP/2 response"
+    end
+
+    private def unbuffered_read(slice : Slice(UInt8))
+      raise "can't read from HTTP::Server::Response"
+    end
+
+    private def unbuffered_write(slice : Slice(UInt8))
+      ensure_headers_written
+      @stream.send_data(slice)
+    end
+
+    def close
+      unless @wrote_headers || @out_count == 0
+        response.content_length = @out_count
+      end
+      ensure_headers_written
+      super
+    end
+
+    private def ensure_headers_written
+      unless @wrote_headers
+        response.headers[":status"] = response.status_code.to_s
+
+        if response.has_cookies?
+          response.cookies.add_response_headers(response.headers)
+        end
+
+        flags = @out_count == 0 ? HTTP2::Frame::Flags::END_STREAM : HTTP2::Frame::Flags::None
+        @stream.send_headers(response.headers, flags)
       end
       @wrote_headers = true
     end
 
-    protected def wrote_headers?
-      @wrote_headers
+    private def unbuffered_close
+      @stream.send_data(Slice(UInt8).new(0), HTTP2::Frame::Flags::END_STREAM)
     end
 
-    protected def has_cookies?
-      !@cookies.nil?
+    private def unbuffered_rewind
+      raise "can't rewind to HTTP::Server::Response"
     end
 
-    # :nodoc:
-    # TODO: cap buffer size with connection's max_frame_size setting (?)
-    class StreamOutput
-      include IO::Buffered
-
-      property! response : Response
-
-      def initialize(@stream : HTTP2::Stream)
-        @in_buffer_rem = Slice.new(Pointer(UInt8).null, 0)
-        @out_count = 0
-        @sync = false
-        @flush_on_newline = false
-        @wrote_headers = false
-      end
-
-      def reset
-        raise "can't reset HTTP/2 response"
-      end
-
-      private def unbuffered_read(slice : Slice(UInt8))
-        raise "can't read from HTTP::Server::Response"
-      end
-
-      private def unbuffered_write(slice : Slice(UInt8))
-        ensure_headers_written
-        @stream.send_data(slice)
-      end
-
-      def close
-        unless @wrote_headers || @out_count == 0
-          response.content_length = @out_count
-        end
-        ensure_headers_written
-        super
-      end
-
-      private def ensure_headers_written
-        unless @wrote_headers
-          response.headers[":status"] = response.status_code.to_s
-
-          if response.has_cookies?
-            response.cookies.add_response_headers(response.headers)
-          end
-
-          flags = @out_count == 0 ? HTTP2::Frame::Flags::END_STREAM : HTTP2::Frame::Flags::None
-          @stream.send_headers(response.headers, flags)
-        end
-        @wrote_headers = true
-      end
-
-      private def unbuffered_close
-        @stream.send_data(Slice(UInt8).new(0), HTTP2::Frame::Flags::END_STREAM)
-      end
-
-      private def unbuffered_rewind
-        raise "can't rewind to HTTP::Server::Response"
-      end
-
-      private def unbuffered_flush
-      end
-    end
-
-    # :nodoc:
-    class Output
-      include IO::Buffered
-
-      property! response : Response
-
-      @chunked : Bool
-      @io : IO
-
-      def initialize(@io)
-        @chunked = false
-      end
-
-      def reset
-        @in_buffer_rem = Slice.new(Pointer(UInt8).null, 0)
-        @out_count = 0
-        @sync = false
-        @flush_on_newline = false
-        @chunked = false
-      end
-
-      private def unbuffered_read(slice : Slice(UInt8))
-        raise "can't read from HTTP::Server::Response"
-      end
-
-      private def unbuffered_write(slice : Slice(UInt8))
-        unless response.wrote_headers?
-          if response.version != "HTTP/1.0" && !response.headers.has_key?("Content-Length")
-            response.headers["Transfer-Encoding"] = "chunked"
-            @chunked = true
-          end
-        end
-
-        ensure_headers_written
-
-        if @chunked
-          slice.size.to_s(16, @io)
-          @io << "\r\n"
-          @io.write(slice)
-          @io << "\r\n"
-        else
-          @io.write(slice)
-        end
-      end
-
-      def close
-        unless response.wrote_headers?
-          response.content_length = @out_count
-        end
-
-        ensure_headers_written
-
-        super
-      end
-
-      private def ensure_headers_written
-        unless response.wrote_headers?
-          if response.has_cookies?
-            response.cookies.add_response_headers(response.headers)
-          end
-
-          response.write_headers
-        end
-      end
-
-      private def unbuffered_close
-        @io << "0\r\n\r\n" if @chunked
-      end
-
-      private def unbuffered_rewind
-        raise "can't rewind to HTTP::Server::Response"
-      end
-
-      private def unbuffered_flush
-        @io.flush
-      end
+    private def unbuffered_flush
     end
   end
 end
