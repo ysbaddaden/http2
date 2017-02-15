@@ -3,7 +3,6 @@ require "http/server"
 require "logger"
 require "socket"
 require "./src/http2"
-require "./src/io/hexdump"
 
 class HTTP::Request
   def initialize(@method : String, @resource : String, @headers : Headers, @version = "HTTP/2.0")
@@ -43,7 +42,9 @@ module HTTP2
         socket = OpenSSL::SSL::Socket::Server.new(socket, tls_context)
       end
 
-      #socket = IO::Hexdump.new(socket, logger, write: false)
+      if ENV["DEBUG"]?
+        socket = IO::Hexdump.new(socket, STDERR, read: true)
+      end
 
       if line = socket.gets
         method, resource, protocol = line.split
@@ -116,7 +117,7 @@ module HTTP2
         stream = connection.streams.find(1)
 
         # FIXME: the cast is required for Crystal to compile
-        spawn handle_http2_request(stream, request as HTTP::Request)
+        spawn handle_http2_request(stream, request.as(HTTP::Request))
       end
 
       loop do
