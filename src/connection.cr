@@ -30,9 +30,9 @@ module HTTP2
   class Connection
     property local_settings : Settings
     property remote_settings : Settings
-    private getter io : IO #::FileDescriptor | OpenSSL::SSL::Socket
+    private getter io : IO # ::FileDescriptor | OpenSSL::SSL::Socket
 
-    @logger : Logger|Logger::Dummy|Nil
+    @logger : Logger | Logger::Dummy | Nil
 
     def initialize(@io, @logger = nil)
       @local_settings = DEFAULT_SETTINGS.dup
@@ -74,7 +74,7 @@ module HTTP2
         rescue Channel::ClosedError
           break
         rescue ex
-          #logger.debug { "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join('\n')}" }
+          # logger.debug { "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join('\n')}" }
           logger.debug { "ERROR: #{ex.class.name} #{ex.message}" }
         end
       end
@@ -126,7 +126,6 @@ module HTTP2
             end
           end
         end
-
       when Frame::Type::HEADERS
         raise Error.protocol_error if stream.id == 0
         read_padded(frame) do |len|
@@ -168,7 +167,6 @@ module HTTP2
             end
           end
         end
-
       when Frame::Type::PUSH_PROMISE
         raise Error.protocol_error if stream.id == 0
         read_padded(frame) do |len|
@@ -180,7 +178,6 @@ module HTTP2
           buf = read_headers_payload(frame, buf.to_unsafe, len)
           hpack_decoder.decode(buf, stream.headers)
         end
-
       when Frame::Type::PRIORITY
         raise Error.protocol_error if stream.id == 0
         raise Error.frame_size_error unless frame.size == PRIORITY_FRAME_SIZE
@@ -189,13 +186,11 @@ module HTTP2
         weight = read_byte.to_i32 + 1
         stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
         logger.debug { "  #{stream.priority.debug}" }
-
       when Frame::Type::RST_STREAM
         raise Error.protocol_error if stream.id == 0
         raise Error.frame_size_error unless frame.size == RST_STREAM_FRAME_SIZE
         error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
         logger.debug { "  code=#{error_code.to_s}" }
-
       when Frame::Type::SETTINGS
         raise Error.protocol_error unless stream.id == 0
         raise Error.frame_size_error unless frame.size % 6 == 0
@@ -205,13 +200,11 @@ module HTTP2
           end
           send Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
         end
-
       when Frame::Type::PING
         raise Error.protocol_error unless stream.id == 0
         raise Error.frame_size_error unless frame.size == PING_FRAME_SIZE
         io.read_fully(buf = Slice(UInt8).new(frame.size))
         send Frame.new(Frame::Type::PING, streams.find(0), 1, buf) unless frame.flags.ack?
-
       when Frame::Type::GOAWAY
         _, last_stream_id = read_stream_id
         error_code = Error::Code.from_value(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
@@ -224,25 +217,21 @@ module HTTP2
         unless error_code == Error::Code::NO_ERROR
           raise ClientError.new(error_code, last_stream_id, error_message)
         end
-
       when Frame::Type::WINDOW_UPDATE
         raise Error.frame_size_error unless frame.size == WINDOW_UPDATE_FRAME_SIZE
         buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
-        #reserved = buf.bit(31)
+        # reserved = buf.bit(31)
         window_size_increment = (buf & 0x7fffffff_u32).to_i32
         raise Error.protocol_error unless MINIMUM_WINDOW_SIZE <= window_size_increment <= MAXIMUM_WINDOW_SIZE
 
         logger.debug { "  WINDOW_SIZE_INCREMENT=#{window_size_increment}" }
-        stream.increment_window_size(window_size_increment)
 
         unless stream.increment_window_size(window_size_increment)
           raise Error.flow_control_error if stream.id == 0
           stream.send_rst_stream(Error::Code::FLOW_CONTROL_ERROR)
         end
-
       when Frame::Type::CONTINUATION
         Error.protocol_error("UNEXPECTED continuation frame")
-
       else
         io.skip(frame.size)
       end
@@ -343,7 +332,7 @@ module HTTP2
       end
 
       if flush
-        io.flush #unless io.sync?
+        io.flush # unless io.sync?
       end
     end
 

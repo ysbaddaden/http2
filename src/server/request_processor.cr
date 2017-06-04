@@ -1,5 +1,5 @@
 require "base64"
-#require "io/hexdump"
+# require "io/hexdump"
 require "./context"
 require "./response"
 
@@ -9,7 +9,7 @@ class HTTP::Server::RequestProcessor
   def process(io, alpn, logger)
     must_close = true
 
-    #io = IO::Hexdump.new(io, read: true)
+    # io = IO::Hexdump.new(io, read: true)
 
     if alpn == "h2"
       handle_http2_client(io, alpn: alpn, logger: logger)
@@ -73,17 +73,14 @@ class HTTP::Server::RequestProcessor
         # didn't read it all, for the next request
         request.body.try(&.close)
       end
-
     rescue ex : Errno
       # FIXME: calling with curl results in EPIPE (certainly related to
       #        SSL::Error below)
       raise ex unless ex.errno == Errno::EPIPE
-
     rescue ex : OpenSSL::SSL::Error
       # FIXME: calling with curl results in "SSL_read: ZERO_RETURN" exception
       #        (certainly related to EPIPE above)
       raise ex unless ex.message.try(&.includes?("ZERO_RETURN"))
-
     ensure
       io.close if must_close
     end
@@ -139,24 +136,19 @@ class HTTP::Server::RequestProcessor
         headers = validate_http2_headers(frame.stream.headers)
         request = Request.new(headers[":method"], headers[":path"], headers, version: "HTTP/2.0")
         spawn handle_http2_request(frame.stream, request)
-
       when HTTP2::Frame::Type::PUSH_PROMISE
         raise HTTP2::Error.protocol_error("UNEXPECTED push promise frame")
-
       when HTTP2::Frame::Type::GOAWAY
         break
       end
     end
-
   rescue err : HTTP2::ClientError
     logger.debug { "#{err.code}: #{err.message}" }
-
   rescue err : HTTP2::Error
     if connection
       connection.close(error: err) unless connection.closed?
     end
     logger.debug { "#{err.code}: #{err.message}" }
-
   ensure
     if connection
       connection.close unless connection.closed?
@@ -182,7 +174,7 @@ class HTTP::Server::RequestProcessor
       # special colon (:) headers MUST come before the regular headers
       regular ||= !name.starts_with?(':')
 
-      if (name.starts_with?(':') && (regular || !HTTP2::REQUEST_PSEUDO_HEADERS.includes?(name))) || ("A" .. "Z").covers?(name)
+      if (name.starts_with?(':') && (regular || !HTTP2::REQUEST_PSEUDO_HEADERS.includes?(name))) || ("A".."Z").covers?(name)
         raise HTTP2::Error.protocol_error("MALFORMED #{name} header")
       end
       if name == "connection"
@@ -202,7 +194,9 @@ class HTTP::Server::RequestProcessor
         raise HTTP2::Error.protocol_error("INVALID :scheme pseudo-header")
       end
 
-      unless headers.get?(":path").try(&.size) == 1
+      maybe_paths = headers.get?(":path")
+      first_path = maybe_paths.try(&.first)
+      unless maybe_paths.try(&.size) == 1 && !first_path.nil? && !first_path.empty?
         raise HTTP2::Error.protocol_error("INVALID :path pseudo-header")
       end
     end

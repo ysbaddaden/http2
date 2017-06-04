@@ -59,8 +59,8 @@ module HTTP2
 
     def active?
       state == State::OPEN ||
-      state == State::HALF_CLOSED_LOCAL ||
-      state == State::HALF_CLOSED_REMOTE
+        state == State::HALF_CLOSED_LOCAL ||
+        state == State::HALF_CLOSED_REMOTE
     end
 
     def data?
@@ -99,6 +99,7 @@ module HTTP2
           # resume fiber waiting to send data
           fiber.resume
         end
+        true
       end
     end
 
@@ -238,7 +239,6 @@ module HTTP2
         else
           error!(receiving)
         end
-
       when State::RESERVED_LOCAL
         error!(receiving) if receiving
 
@@ -250,7 +250,6 @@ module HTTP2
         else
           error!(receiving)
         end
-
       when State::RESERVED_REMOTE
         error!(receiving) unless receiving
 
@@ -262,7 +261,6 @@ module HTTP2
         else
           error!(receiving)
         end
-
       when State::OPEN
         case frame.type
         when Frame::Type::HEADERS, Frame::Type::DATA
@@ -276,18 +274,16 @@ module HTTP2
         else
           error!(receiving)
         end
-
       when State::HALF_CLOSED_LOCAL
-        #if sending
+        # if sending
         #  case frame.type
         #  when Frame::Type::HEADERS, Frame::Type::CONTINUATION, Frame::Type::DATA
         #    raise Error.stream_closed("STREAM #{id} is #{state}")
         #  end
-        #end
+        # end
         if frame.flags.end_stream? || frame.type == Frame::Type::RST_STREAM
           self.state = State::CLOSED
         end
-
       when State::HALF_CLOSED_REMOTE
         if receiving
           case frame.type
@@ -298,7 +294,6 @@ module HTTP2
         if frame.flags.end_stream? || frame.type == Frame::Type::RST_STREAM
           self.state = State::CLOSED
         end
-
       when State::CLOSED
         case frame.type
         when Frame::Type::WINDOW_UPDATE, Frame::Type::RST_STREAM
