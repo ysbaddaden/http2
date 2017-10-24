@@ -34,6 +34,11 @@ class HTTP::Server::RequestProcessor
           return
         end
 
+        unless {"HTTP/1.0", "HTTP/1.1"}.includes?(request.version)
+          response.close
+          return
+        end
+
         response.version = request.version
         response.reset
 
