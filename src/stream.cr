@@ -99,6 +99,7 @@ module HTTP2
           # resume fiber waiting to send data
           fiber.resume
         end
+        true
       end
     end
 
