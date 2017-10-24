@@ -92,14 +92,18 @@ module HTTP2
     end
 
     def increment_window_size(increment)
-      if window_size.to_i64 + increment <= MAXIMUM_WINDOW_SIZE
-        @window_size += increment
-
-        if fiber = @fiber
-          # resume fiber waiting to send data
-          fiber.resume
-        end
+      if window_size.to_i64 + increment > MAXIMUM_WINDOW_SIZE
+        return false
       end
+
+      @window_size += increment
+
+      if fiber = @fiber
+        # resume fiber waiting to send data
+        fiber.resume
+      end
+
+      true
     end
 
     private def consume_window_size(frame)
@@ -196,6 +200,8 @@ module HTTP2
           # OPTIMIZE: maybe we should sleep(0) here, in order to give other
           # coroutines a chance to send frames? so we can take advantage of
           # HTTP2 multiplexing? or maybe the Channel and IO are enough?
+
+          Fiber.yield
         end
       end
       nil

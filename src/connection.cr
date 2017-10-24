@@ -231,7 +231,6 @@ module HTTP2
         raise Error.protocol_error unless MINIMUM_WINDOW_SIZE <= window_size_increment <= MAXIMUM_WINDOW_SIZE
 
         logger.debug { "  WINDOW_SIZE_INCREMENT=#{window_size_increment}" }
-        stream.increment_window_size(window_size_increment)
 
         unless stream.increment_window_size(window_size_increment)
           raise Error.flow_control_error if stream.id == 0
