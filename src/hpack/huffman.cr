@@ -61,18 +61,38 @@ module HTTP2
       def decode(bytes : Slice(UInt8))
         io = IO::Memory.new
         node = tree
+        eos_padding = true
 
         bytes.each do |byte|
+          byte_has_value = false
+          eos_padding = true
+
           7.downto(0) do |i|
-            unless node = byte.bit(i) == 1 ? node.right : node.left
-              raise Exception.new("node is nil!")
+
+            if byte.bit(i) == 1
+              node = node.right
+            else
+              node = node.left
+              eos_padding = false
             end
+
+            raise Exception.new("node is nil!") unless node
+
             if value = node.value
               io.write_byte(value)
               node = tree
+
+              byte_has_value = true
+              eos_padding = true
             end
           end
+
+          # RFC 7541, section 5.2
+          raise Exception.new("huffman string padding is larger than 7-bits") unless byte_has_value
         end
+
+        # RFC 7541, section 5.2
+        raise Exception.new("huffman string padding must use MSB of EOS symbol") unless eos_padding
 
         io.to_s
       end
@@ -339,7 +359,7 @@ module HTTP2
       {253_u8,  0b111111111111111111111101111,     27},
       {254_u8,  0b111111111111111111111110000,     27},
       {255_u8,  0b11111111111111111111101110,      26},
-     #{256_u8,  0b111111111111111111111111111111,  30},
+     #{256_u8,  0b111111111111111111111111111111,  30}, # EOS symbol (invalid)
     ]
   end
 end
