@@ -30,6 +30,7 @@ $ make bin/h
 ```
 
 Test against HTTP:
+```
 $ bin/h
 $ ./h2spec -p 9292 -S
 ```
