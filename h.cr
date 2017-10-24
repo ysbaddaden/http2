@@ -13,6 +13,10 @@ server = HTTP::Server.new(host, port) do |context|
   response << "Served with #{request.version}\n"
 end
 
+if ENV["CI"]?
+  server.logger = Logger::Dummy.new(File.open("/dev/null"))
+end
+
 if tls
   tls_context = HTTP::Server.default_tls_context
   tls_context.certificate_chain = File.join("ssl", "server.crt")
