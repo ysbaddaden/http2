@@ -1,0 +1,23 @@
+dist: trusty
+sudo: required
+
+language: crystal
+
+env:
+  global:
+    - H2SPEC=2.1.0
+
+before_install:
+  - bin/ci setup
+  - shards install
+
+install:
+  - make bin/h
+  - bin/ci run
+
+script:
+  - make test
+  - bin/h2spec --strict --port 9393 --tls --insecure
+
+  # NOTE: disabled because of random failures:
+  #- bin/h2spec --strict --port 9292

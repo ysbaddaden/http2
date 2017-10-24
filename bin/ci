@@ -1,0 +1,32 @@
+#! /usr/bin/env sh
+set -e
+set -x
+
+case "$1" in
+  setup)
+      # install h2spec
+      curl -sL "https://github.com/summerwind/h2spec/releases/download/v$H2SPEC/h2spec_linux_amd64.tar.gz" | tar zx -C bin
+      bin/h2spec --version
+
+      # update OpenSSL (to support ALPN)
+      curl -sOL "http://security.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_1.0.2g-1ubuntu4.6_amd64.deb"
+      curl -sOL "http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.0.0_1.0.2g-1ubuntu4.6_amd64.deb"
+      curl -sOL "http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl-dev_1.0.2g-1ubuntu4.6_amd64.deb"
+      sudo dpkg -i *.deb
+
+      # create SSL certificates
+      mkdir -p ssl
+      openssl genrsa -out "ssl/server.key" 2048
+      openssl req -new -key "ssl/server.key" -out "ssl/server.csr" -subj "/C=/ST=/L=/O=Local Cert/OU=/CN=localhost"
+      openssl x509 -req -days 365 -in "ssl/server.csr" -signkey "ssl/server.key" -out "ssl/server.crt"
+      ;;
+
+  run)
+      # start HTTP servers
+      make run PORT=9292 2>/dev/null &
+      make run PORT=9393 TLS=true 2>/dev/null &
+
+      # make sure servers started
+      sleep 1
+      ;;
+esac
