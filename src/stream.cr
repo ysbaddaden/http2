@@ -68,7 +68,7 @@ module HTTP2
     end
 
     def data
-      @data ||= Data.new
+      @data ||= Data.new(self, connection.local_settings.initial_window_size)
     end
 
     def headers
@@ -108,6 +108,15 @@ module HTTP2
 
     private def consume_window_size(frame)
       @window_size -= frame.payload.size
+    end
+
+    def send_window_update_frame(increment)
+      unless MINIMUM_WINDOW_SIZE <= increment <= MAXIMUM_WINDOW_SIZE
+        raise Exception.new("invalid WINDOW_UPDATE increment: #{increment}")
+      end
+      io = IO::Memory.new
+      io.write_bytes(increment.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)
+      connection.send Frame.new(Frame::Type::WINDOW_UPDATE, self, 0, io.to_slice)
     end
 
     def send_priority

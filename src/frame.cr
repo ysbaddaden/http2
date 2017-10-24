@@ -63,6 +63,11 @@ module HTTP2
       @size || payload?.try(&.size) || 0
     end
 
+    # DATA frames are flow-controlled.
+    def flow_controlled?
+      @type.data?
+    end
+
     def debug(color = nil)
       flags = (type == Type::SETTINGS || type == Type::PING) && @flags.value == 1 ? "ACK" : @flags
       type = if color; @type.colorize(color); else; @type; end

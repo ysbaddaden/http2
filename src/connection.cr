@@ -30,7 +30,7 @@ module HTTP2
   class Connection
     property local_settings : Settings
     property remote_settings : Settings
-    private getter io : IO #::FileDescriptor | OpenSSL::SSL::Socket
+    private getter io : IO
 
     getter hpack_encoder : HPACK::Encoder
     getter hpack_decoder : HPACK::Decoder
@@ -46,9 +46,14 @@ module HTTP2
       @hpack_encoder = HPACK::Encoder.new(
         max_table_size: local_settings.header_table_size,
         indexing: HPACK::Indexing::NONE,
-        huffman: true)
+        huffman: true
+      )
       @hpack_decoder = HPACK::Decoder.new(
-        max_table_size: remote_settings.header_table_size)
+        max_table_size: remote_settings.header_table_size
+      )
+
+      @incoming_window_size = DEFAULT_INITIAL_WINDOW_SIZE
+      # @outgoing_window_size = DEFAULT_INITIAL_WINDOW_SIZE
 
       spawn frame_writer
     end
@@ -77,6 +82,13 @@ module HTTP2
               io.flush
             else
               write(frame)
+
+              # Increase the CONNECTION's window size along with the STREAM's
+              # window size, which is limited to DEFAULT_INITIAL_WINDOW_SIZE by
+              # default:
+              if frame.type.window_update? && frame.stream.id != 0
+                increase_connection_window_size
+              end
             end
           else
             io.close unless io.closed?
@@ -110,6 +122,8 @@ module HTTP2
       when Frame::Type::DATA
         raise Error.protocol_error if stream.id == 0
         read_padded(frame) do |len|
+          @incoming_window_size -= len
+
           io.read_fully(buf = Slice(UInt8).new(len))
           stream.data.write(buf)
 
@@ -349,6 +363,14 @@ module HTTP2
 
       if flush
         io.flush #unless io.sync?
+      end
+    end
+
+    private def increase_connection_window_size
+      if @incoming_window_size < DEFAULT_INITIAL_WINDOW_SIZE
+        increment = DEFAULT_INITIAL_WINDOW_SIZE * 16
+        @incoming_window_size += increment
+        streams.find(0).send_window_update_frame(increment)
       end
     end
 

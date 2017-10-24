@@ -50,7 +50,7 @@ class IO::CircularBuffer
   end
 
   getter bytesize : Int32
-  @capacity : Int32
+  getter capacity : Int32
 
   def initialize(capacity : Int)
     String.check_capacity_in_bounds(capacity)
