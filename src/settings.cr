@@ -114,7 +114,7 @@ module HTTP2
     end
 
     # :nodoc:
-    macro def size : Int32
+    def size : Int32
       num = 0
       {% for name in Identifier.constants %}
         num += 1 if @{{ name.underscore }}
