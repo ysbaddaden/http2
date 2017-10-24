@@ -202,7 +202,8 @@ class HTTP::Server::RequestProcessor
         raise HTTP2::Error.protocol_error("INVALID :scheme pseudo-header")
       end
 
-      unless headers.get?(":path").try(&.size) == 1
+      paths = headers.get?(":path")
+      unless paths.try(&.size) == 1 && !paths.try(&.first.empty?)
         raise HTTP2::Error.protocol_error("INVALID :path pseudo-header")
       end
     end
