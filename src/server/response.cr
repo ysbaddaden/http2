@@ -1,8 +1,18 @@
 # Overloads HTTP::Reponse to support HTTP/2 streams along with HTTP/1
 # connections.
 class HTTP::Server::Response
+  module OriginalOutput
+    abstract def reset
+  end
+
+  class Output
+    include OriginalOutput
+  end
+
   @io : IO?                # HTTP/1
   @stream : HTTP2::Stream? # HTTP/2
+
+  @original_output : OriginalOutput
 
   # :nodoc:
   def initialize(io : IO, @version = "HTTP/1.1")
@@ -11,7 +21,8 @@ class HTTP::Server::Response
     @status_code = 200
     @wrote_headers = false
     @upgraded = false
-    @output = output = @original_output = Output.new(io)
+    output = @original_output = Output.new(io)
+    @output = output.as(IO)
     output.response = self
   end
 
@@ -22,8 +33,20 @@ class HTTP::Server::Response
     @status_code = 200
     @wrote_headers = false
     @upgraded = false
-    @output = output = @original_output = StreamOutput.new(stream)
+    output = @original_output = StreamOutput.new(stream)
+    @output = output.as(IO)
     output.response = self
+  end
+
+  # :nodoc:
+  def reset
+    @headers.clear
+    @cookies = nil
+    @status_code = 200
+    @wrote_headers = false
+    @upgraded = false
+    @output = @original_output.as(IO)
+    @original_output.reset
   end
 
   def http1?
@@ -68,7 +91,8 @@ class HTTP::Server::Response
 
   # :nodoc:
   # TODO: cap IO buffer to connection's max_frame_size setting (e.g. 16KB)
-  class StreamOutput
+  class StreamOutput < IO
+    include OriginalOutput
     include IO::Buffered
 
     property! response : Response

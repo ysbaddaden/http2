@@ -1,7 +1,5 @@
 module HTTP2
-  class Data
-    include IO
-
+  class Data < IO
     getter size : Int32
     @r : IO #::FileDescriptor
     @w : IO #::FileDescriptor
