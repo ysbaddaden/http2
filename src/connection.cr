@@ -284,7 +284,7 @@ module HTTP2
       unless frame_type.priority? || streams.valid?(stream_id)
         raise Error.protocol_error("INVALID stream_id ##{stream_id}")
       end
-      stream = streams.find(stream_id)
+      stream = streams.find(stream_id, consume: !frame_type.priority?)
       frame = Frame.new(frame_type, stream, flags, size: size)
       logger.debug { "recv #{frame.debug(color: :light_cyan)}" }
 

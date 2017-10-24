@@ -12,7 +12,12 @@ module HTTP2
     end
 
     # Finds an incoming stream, silently creating it if it doesn't exist yet.
-    def find(id)
+    #
+    # Takes care to increment `highest_remote_id` counter, unless `consume` is
+    # set to false, for example a PRIORITY frame forward declares a stream
+    # priority/dependency but doesn't consume the stream identifiers, so they
+    # are still valid.
+    def find(id, consume = true)
       @mutex.synchronize do
         @streams[id] ||= begin
           if max = @connection.local_settings.max_concurrent_streams
@@ -20,7 +25,7 @@ module HTTP2
               raise Error.refused_stream("MAXIMUM capacity reached")
             end
           end
-          if id > @highest_remote_id
+          if id > @highest_remote_id && consume
             @highest_remote_id = id
           end
           Stream.new(@connection, id)
@@ -30,7 +35,10 @@ module HTTP2
 
     # Returns true if the incoming stream id is valid for the current connection.
     def valid?(id)
-      id == 0 || ((id % 2) == 1 && id >= @highest_remote_id)
+      id == 0 || (                   # stream #0 is always valid
+        (id % 2) == 1 &&             # incoming streams are odd-numbered
+          id >= @highest_remote_id   # stream ids must grow (not shrink)
+      )
     end
 
     # Creates an outgoing stream.
