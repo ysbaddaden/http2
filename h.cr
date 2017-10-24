@@ -11,6 +11,22 @@ server = HTTP::Server.new(host, port) do |context|
   response.headers["Content-Type"] = "text/plain"
   response << "Received #{request.method} #{request.path} (#{authority})\n"
   response << "Served with #{request.version}\n"
+
+  if request.method == "PUT" && request.path == "/upload"
+    buffer = uninitialized UInt8[8192]
+    response << "Reading DATA:\n"
+    size = 0
+
+    loop do
+      read_bytes = context.stream.data.read(buffer.to_slice)
+      break if read_bytes == 0
+
+      size += read_bytes
+      response << "  #{size}\n"
+
+      Fiber.yield
+    end
+  end
 end
 
 if ENV["CI"]?
