@@ -98,7 +98,7 @@ module HTTP2
 
       @window_size += increment
 
-      if fiber = @fiber
+      if @window_size > 0 && (fiber = @fiber)
         # resume fiber waiting to send data
         fiber.resume
       end

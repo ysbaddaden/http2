@@ -33,6 +33,12 @@ module HTTP2
       end
     end
 
+    def each
+      @mutex.synchronize do
+        @streams.each { |_, stream| yield stream }
+      end
+    end
+
     # Returns true if the incoming stream id is valid for the current connection.
     def valid?(id)
       id == 0 || (                   # stream #0 is always valid

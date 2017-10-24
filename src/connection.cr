@@ -194,11 +194,19 @@ module HTTP2
       when Frame::Type::SETTINGS
         raise Error.protocol_error unless stream.id == 0
         raise Error.frame_size_error unless frame.size % 6 == 0
+
         unless frame.flags.ack?
           remote_settings.parse(io, frame.size / 6) do |id, value|
             logger.debug { "  #{id}=#{value}" }
-            if id == Settings::Identifier::HEADER_TABLE_SIZE
+            case id
+            when .header_table_size?
               hpack_decoder.max_table_size = value
+            when .initial_window_size?
+              difference = value - remote_settings.initial_window_size
+              unless difference == 0
+                # adjust windows size for all control-flow streams
+                streams.each { |stream| stream.increment_window_size(difference) }
+              end
             end
           end
           send Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
