@@ -31,6 +31,9 @@ module HTTP
       end
     end
 
+    def logger=(@logger)
+    end
+
     def handle_client(io)
       return unless io
       io.sync = true

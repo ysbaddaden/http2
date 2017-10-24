@@ -7,7 +7,7 @@ require "./hpack"
 require "./settings"
 require "./streams"
 
-class Logger::Dummy
+class Logger::Dummy < Logger
   {% for name in Logger::Severity.constants %}
     def {{ name.downcase }}?
       false
@@ -35,7 +35,7 @@ module HTTP2
     getter hpack_encoder : HPACK::Encoder
     getter hpack_decoder : HPACK::Decoder
 
-    @logger : Logger|Logger::Dummy|Nil
+    @logger : Logger?
 
     def initialize(@io, @logger = nil)
       @local_settings = DEFAULT_SETTINGS.dup
@@ -60,7 +60,7 @@ module HTTP2
     end
 
     def logger
-      @logger ||= Logger::Dummy.new
+      @logger ||= Logger::Dummy.new(File.open("/dev/null"))
     end
 
     def logger=(@logger)
