@@ -1,6 +1,4 @@
-class IO::Hexdump
-  include IO
-
+class IO::Hexdump < IO
   def initialize(@io : IO, @logger : Logger|Logger::Dummy, @read = true, @write = true)
   end
 
