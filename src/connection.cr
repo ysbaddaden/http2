@@ -32,6 +32,9 @@ module HTTP2
     property remote_settings : Settings
     private getter io : IO #::FileDescriptor | OpenSSL::SSL::Socket
 
+    getter hpack_encoder : HPACK::Encoder
+    getter hpack_decoder : HPACK::Decoder
+
     @logger : Logger|Logger::Dummy|Nil
 
     def initialize(@io, @logger = nil)
@@ -39,6 +42,14 @@ module HTTP2
       @remote_settings = Settings.new
       @channel = Channel::Buffered(Frame | Array(Frame) | Nil).new
       @closed = false
+
+      @hpack_encoder = HPACK::Encoder.new(
+        max_table_size: local_settings.header_table_size,
+        indexing: HPACK::Indexing::NONE,
+        huffman: true)
+      @hpack_decoder = HPACK::Decoder.new(
+        max_table_size: remote_settings.header_table_size)
+
       spawn frame_writer
     end
 
@@ -78,22 +89,6 @@ module HTTP2
           logger.debug { "ERROR: #{ex.class.name} #{ex.message}" }
         end
       end
-    end
-
-    def hpack_encoder
-      # FIXME: thread safety?
-      #        move to #initialize?
-      @hpack_encoder ||= HPACK::Encoder.new(
-        max_table_size: local_settings.header_table_size,
-        indexing: HPACK::Indexing::NONE,
-        huffman: true)
-    end
-
-    def hpack_decoder
-      # FIXME: thread safety?
-      #        move to #initialize? what about dependency on remote settings?
-      @hpack_decoder ||= HPACK::Decoder.new(
-        max_table_size: remote_settings.header_table_size)
     end
 
     def read_client_preface(truncated = false)
@@ -200,8 +195,11 @@ module HTTP2
         raise Error.protocol_error unless stream.id == 0
         raise Error.frame_size_error unless frame.size % 6 == 0
         unless frame.flags.ack?
-          remote_settings.parse(io, frame.size / 6) do |settings, value|
-            logger.debug { "  #{settings}=#{value}" }
+          remote_settings.parse(io, frame.size / 6) do |id, value|
+            logger.debug { "  #{id}=#{value}" }
+            if id == Settings::Identifier::HEADER_TABLE_SIZE
+              hpack_decoder.max_table_size = value
+            end
           end
           send Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
         end

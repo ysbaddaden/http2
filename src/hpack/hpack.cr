@@ -20,9 +20,10 @@ module HTTP2
     class Decoder
       private getter! reader : SliceReader
       getter table : DynamicTable
+      property max_table_size : Int32
 
-      def initialize(max_table_size = 4096)
-        @table = DynamicTable.new(max_table_size)
+      def initialize(@max_table_size = 4096)
+        @table = DynamicTable.new(@max_table_size)
       end
 
       def decode(bytes, headers = HTTP::Headers.new)
@@ -43,8 +44,10 @@ module HTTP2
 
           elsif reader.current_byte.bit(5) == 1        # 001.....  table max size update
             raise Error.new("unexpected dynamic table size update") if decoded_common_headers
-            maximum = integer(5)
-            table.resize(maximum)
+            if (new_size = integer(5)) > max_table_size
+              raise Error.new("dynamic table size update is larger than SETTINGS_HEADER_TABLE_SIZE")
+            end
+            table.resize(new_size)
             next
 
           elsif reader.current_byte.bit(4) == 1        # 0001....  literal never indexed
