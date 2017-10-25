@@ -42,8 +42,10 @@ module HTTP2
     # Returns true if the incoming stream id is valid for the current connection.
     def valid?(id)
       id == 0 || (                   # stream #0 is always valid
-        (id % 2) == 1 &&             # incoming streams are odd-numbered
+        (id % 2) == 1 && (           # incoming streams are odd-numbered
+          @streams[id]? ||           # streams already exists
           id >= @highest_remote_id   # stream ids must grow (not shrink)
+        )
       )
     end
 
