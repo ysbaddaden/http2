@@ -212,7 +212,7 @@ module HTTP2
               difference = value - remote_settings.initial_window_size
               unless difference == 0
                 # adjust windows size for all control-flow streams
-                streams.each { |stream| stream.increment_window_size(difference) }
+                streams.each { |stream| stream.increment_outbound_window_size(difference) }
               end
             end
           end
@@ -247,7 +247,7 @@ module HTTP2
 
         logger.debug { "  WINDOW_SIZE_INCREMENT=#{window_size_increment}" }
 
-        unless stream.increment_window_size(window_size_increment)
+        unless stream.increment_outbound_window_size(window_size_increment)
           raise Error.flow_control_error if stream.id == 0
           stream.send_rst_stream(Error::Code::FLOW_CONTROL_ERROR)
         end
@@ -336,7 +336,7 @@ module HTTP2
     end
 
     def write_settings
-      send Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), 0, local_settings.to_payload)
+      write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), 0, local_settings.to_payload)
     end
 
     private def write(frame : Frame, flush = true)

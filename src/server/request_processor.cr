@@ -138,12 +138,20 @@ class HTTP::Server::RequestProcessor
 
       case frame.type
       when HTTP2::Frame::Type::HEADERS
-        # don't dispatch twice
-        next if frame.stream.trailing_headers?
+        stream = frame.stream
 
-        headers = validate_http2_headers(frame.stream.headers)
-        request = Request.new(headers[":method"], headers[":path"], headers, version: "HTTP/2.0")
-        spawn handle_http2_request(frame.stream, request)
+        # don't dispatch twice
+        next if stream.trailing_headers?
+
+        headers = validate_http2_headers(stream.headers)
+        request = Request.new(
+          headers[":method"],
+          headers[":path"],
+          headers: headers,
+          body: stream.data,
+          version: "HTTP/2.0"
+        )
+        spawn handle_http2_request(stream, request)
 
       when HTTP2::Frame::Type::PUSH_PROMISE
         raise HTTP2::Error.protocol_error("UNEXPECTED push promise frame")

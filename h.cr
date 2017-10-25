@@ -16,13 +16,11 @@ server = HTTP::Server.new(host, port) do |context|
     buffer = uninitialized UInt8[8192]
     response << "Reading DATA:\n"
     size = 0
+    body = request.body.not_nil!
 
     loop do
-      read_bytes = context.stream.data.read(buffer.to_slice)
+      read_bytes = body.read(buffer.to_slice)
       break if read_bytes == 0
-
-      size += read_bytes
-      response << "  #{size}\n"
 
       Fiber.yield
     end
