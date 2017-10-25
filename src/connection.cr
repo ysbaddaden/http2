@@ -52,8 +52,8 @@ module HTTP2
         max_table_size: remote_settings.header_table_size
       )
 
-      @incoming_window_size = DEFAULT_INITIAL_WINDOW_SIZE
-      # @outgoing_window_size = DEFAULT_INITIAL_WINDOW_SIZE
+      @inbound_window_size = DEFAULT_INITIAL_WINDOW_SIZE
+      # @outbound_window_size = DEFAULT_INITIAL_WINDOW_SIZE
 
       spawn frame_writer
     end
@@ -82,13 +82,6 @@ module HTTP2
               io.flush
             else
               write(frame)
-
-              # Increase the CONNECTION's window size along with the STREAM's
-              # window size, which is limited to DEFAULT_INITIAL_WINDOW_SIZE by
-              # default:
-              if frame.type.window_update? && frame.stream.id != 0
-                increase_connection_window_size
-              end
             end
           else
             io.close unless io.closed?
@@ -122,7 +115,7 @@ module HTTP2
       when Frame::Type::DATA
         raise Error.protocol_error if stream.id == 0
         read_padded(frame) do |len|
-          @incoming_window_size -= len
+          consume_inbound_window_size(len)
 
           io.read_fully(buf = Slice(UInt8).new(len))
           stream.data.write(buf)
@@ -366,10 +359,17 @@ module HTTP2
       end
     end
 
-    private def increase_connection_window_size
-      if @incoming_window_size < DEFAULT_INITIAL_WINDOW_SIZE
-        increment = DEFAULT_INITIAL_WINDOW_SIZE * 16
-        @incoming_window_size += increment
+    # Keeps the inbound window size (when receiving DATA frames). If the
+    # available size shrinks below half the initial window size, then we send a
+    # WINDOW_UPDATE frame to increment it by the initial window size * the
+    # number of active streams, respecting `MAXIMUM_WINDOW_SIZE`.
+    private def consume_inbound_window_size(len)
+      @inbound_window_size -= len
+      initial_window_size = local_settings.initial_window_size
+
+      if @inbound_window_size < (initial_window_size / 2)
+        increment = Math.min(initial_window_size * streams.active_count(1), MAXIMUM_WINDOW_SIZE)
+        @inbound_window_size += increment
         streams.find(0).send_window_update_frame(increment)
       end
     end
