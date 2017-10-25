@@ -112,7 +112,7 @@ module HTTP2
 
     protected def send_window_update_frame(increment)
       unless MINIMUM_WINDOW_SIZE <= increment <= MAXIMUM_WINDOW_SIZE
-        raise Exception.new("invalid WINDOW_UPDATE increment: #{increment}")
+        raise Error.protocol_error("invalid WINDOW_UPDATE increment: #{increment}")
       end
       io = IO::Memory.new
       io.write_bytes(increment.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)

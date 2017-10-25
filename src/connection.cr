@@ -227,7 +227,7 @@ module HTTP2
 
       when Frame::Type::GOAWAY
         _, last_stream_id = read_stream_id
-        error_code = Error::Code.from_value(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
+        error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
         io.read_fully(buf = Slice(UInt8).new(frame.size - 8))
         error_message = String.new(buf)
 
@@ -332,7 +332,7 @@ module HTTP2
     # synchronisation could end up corrupted if another HEADERS frame for
     # another stream was sent in between.
     def send(frame : Frame | Array(Frame))
-      @channel.send(frame)
+      @channel.send(frame) unless @channel.closed?
     end
 
     def write_settings

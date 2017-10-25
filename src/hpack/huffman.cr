@@ -76,7 +76,7 @@ module HTTP2
               eos_padding = false
             end
 
-            raise Exception.new("node is nil!") unless node
+            raise Error.new("node is nil!") unless node
 
             if value = node.value
               io.write_byte(value)
@@ -88,11 +88,11 @@ module HTTP2
           end
 
           # RFC 7541, section 5.2
-          raise Exception.new("huffman string padding is larger than 7-bits") unless byte_has_value
+          raise Error.new("huffman string padding is larger than 7-bits") unless byte_has_value
         end
 
         # RFC 7541, section 5.2
-        raise Exception.new("huffman string padding must use MSB of EOS symbol") unless eos_padding
+        raise Error.new("huffman string padding must use MSB of EOS symbol") unless eos_padding
 
         io.to_s
       end

@@ -78,19 +78,22 @@ class HTTP::Server::RequestProcessor
         # didn't read it all, for the next request
         request.body.try(&.close)
       end
-
-    rescue ex : Errno
-      # FIXME: calling with curl results in EPIPE (certainly related to
-      #        SSL::Error below)
-      raise ex unless ex.errno == Errno::EPIPE
-
-    rescue ex : OpenSSL::SSL::Error
-      # FIXME: calling with curl results in "SSL_read: ZERO_RETURN" exception
-      #        (certainly related to EPIPE above)
-      raise ex unless ex.message.try(&.includes?("ZERO_RETURN"))
-
     ensure
       io.close if must_close
+    end
+
+  rescue ex : IO::EOFError | IO::Error
+    # silence
+
+  rescue ex : Errno
+    raise ex unless {Errno::EPIPE, Errno::ECONNRESET}.includes?(ex.errno)
+
+  rescue ex : OpenSSL::SSL::Error
+    # NOTE: curl calls may result in "SSL_read: ZERO_RETURN" exceptions
+    # NOTE: unexpectedly closed connections may result in OpenSSL hitting EOF early
+    unless ex.message.try(&.includes?("ZERO_RETURN")) ||
+        ex.message.try(&.includes?("Unexpected EOF"))
+      raise ex
     end
   end
 
