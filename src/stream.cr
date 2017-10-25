@@ -110,7 +110,7 @@ module HTTP2
       @window_size -= frame.payload.size
     end
 
-    def send_window_update_frame(increment)
+    protected def send_window_update_frame(increment)
       unless MINIMUM_WINDOW_SIZE <= increment <= MAXIMUM_WINDOW_SIZE
         raise Exception.new("invalid WINDOW_UPDATE increment: #{increment}")
       end
@@ -218,18 +218,18 @@ module HTTP2
       @fiber = nil
     end
 
-    def send_rst_stream(error_code : Error::Code)
+    protected def send_rst_stream(error_code : Error::Code)
       io = IO::Memory.new
       io.write_bytes(error_code.value.to_u32, IO::ByteFormat::BigEndian)
       io.rewind
       connection.send Frame.new(Frame::Type::RST_STREAM, self, 0, io.to_slice)
     end
 
-    def receiving(frame : Frame)
+    protected def receiving(frame : Frame)
       transition(frame, receiving: true)
     end
 
-    def sending(frame : Frame)
+    protected def sending(frame : Frame)
       transition(frame, receiving: false)
     end
 
