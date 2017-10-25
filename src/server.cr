@@ -24,7 +24,7 @@ module HTTP
 
     def logger
       @logger ||= Logger.new(STDOUT).tap do |logger|
-        logger.level = Logger::Severity::DEBUG
+        logger.level = Logger::Severity::INFO
         logger.formatter = Logger::Formatter.new do |s, d, p, message, io|
           io << message
         end
