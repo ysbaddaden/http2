@@ -51,7 +51,7 @@ module HTTP2
     getter state : State
     property priority : Priority
     private getter connection : Connection
-    @outbound_window_size : Int32
+    protected getter outbound_window_size : Int32
 
     def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state : State = State::IDLE)
       @outbound_window_size = connection.remote_settings.initial_window_size
@@ -91,23 +91,28 @@ module HTTP2
       false
     end
 
-    def increment_outbound_window_size(increment)
+    def increment_outbound_window_size(increment) : Nil
       if @outbound_window_size.to_i64 + increment > MAXIMUM_WINDOW_SIZE
-        return false
+        send_rst_stream(Error::Code::FLOW_CONTROL_ERROR)
+        return
       end
-
       @outbound_window_size += increment
-
-      if @outbound_window_size > 0 && (fiber = @fiber)
-        # resume fiber waiting to send data
-        fiber.resume
-      end
-
-      true
+      resume_pending_write
     end
 
-    private def consume_outbound_window_size(frame)
-      @outbound_window_size -= frame.payload.size
+    # resume fiber waiting to send data
+    protected def resume_pending_write
+      if (fiber = @fiber) && @outbound_window_size > 0
+        # make sure current fiber will be resumed (later)
+        Scheduler.enqueue(Fiber.current)
+
+        # resume pending fiber immediately
+        fiber.resume
+      end
+    end
+
+    protected def consume_outbound_window_size(size)
+      @outbound_window_size -= size
     end
 
     protected def send_window_update_frame(increment)
@@ -178,41 +183,41 @@ module HTTP2
       send_data(data.to_slice, flags)
     end
 
-    def send_data(data : Slice(UInt8), flags = 0)
+    def send_data(data : Slice(UInt8), flags = 0) : Nil
       frame = Frame.new(Frame::Type::DATA, self, Frame::Flags.new(flags.to_u8))
-      max_frame_size = connection.remote_settings.max_frame_size
 
-      if data.size <= max_frame_size && data.size <= @outbound_window_size
-        frame.payload = data
-        consume_outbound_window_size(frame)
+      if data.size == 0
         connection.send(frame)
-      else
-        offset = 0
-        while offset < data.size
-          if @outbound_window_size < 1
-            # block fiber until we can send data
-            @fiber = Fiber.current
-            Scheduler.reschedule
-            @fiber = nil
-          end
-
-          frame_size = @outbound_window_size < max_frame_size ? @outbound_window_size : max_frame_size
-          count = offset + frame_size > data.size ? data.size : frame_size
-
-          if count > 0
-            frame.payload = data[offset, count]
-            consume_outbound_window_size(frame)
-            connection.send(frame)
-            offset += count
-          end
-
-          # OPTIMIZE: maybe we should sleep(0) here, in order to give other
-          # coroutines a chance to send frames? so we can take advantage of
-          # HTTP2 multiplexing? or maybe the Channel and IO are enough?
-          Fiber.yield
-        end
+        Fiber.yield
+        return
       end
-      nil
+
+      until data.size == 0
+        if @outbound_window_size < 1 || connection.outbound_window_size < 1
+          # block fiber until we can send data
+          @fiber = Fiber.current
+          Scheduler.reschedule
+          @fiber = nil
+        end
+
+        size = {data.size, @outbound_window_size, connection.remote_settings.max_frame_size}.min
+        if size > 0
+          actual = connection.consume_outbound_window_size(size)
+
+          if actual > 0
+            frame.payload = data[0, actual]
+            consume_outbound_window_size(actual)
+
+            connection.send(frame)
+            data += actual
+          end
+        end
+
+        # OPTIMIZE: maybe we should sleep(0) here, in order to give other
+        # coroutines a chance to send frames? so we can take advantage of
+        # HTTP2 multiplexing? or maybe the Channel and IO are enough?
+        Fiber.yield
+      end
     ensure
       @fiber = nil
     end

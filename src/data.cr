@@ -36,9 +36,10 @@ module HTTP2
       @inbound_window_size -= bytes_read
 
       unless bytes_read == 0
-        increment = buffer.capacity / 2
+        increment = buffer.capacity # / 2
 
-        if @inbound_window_size <= increment
+        #if @inbound_window_size <= increment
+        if @inbound_window_size <= 0
           @inbound_window_size += increment
           @stream.send_window_update_frame(increment)
         end
@@ -51,6 +52,14 @@ module HTTP2
     def write(slice : Slice(UInt8))
       @size += slice.size
       buffer.write(slice)
+    end
+
+    def copy_from(io : IO, size : Int32)
+      @size += size
+      if (buffer.capacity - buffer.size) < size
+        raise ArgumentError.new
+      end
+      buffer.copy_from(io, size)
     end
 
     def close_read

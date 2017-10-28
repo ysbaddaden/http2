@@ -53,7 +53,7 @@ module HTTP2
       )
 
       @inbound_window_size = DEFAULT_INITIAL_WINDOW_SIZE
-      # @outbound_window_size = DEFAULT_INITIAL_WINDOW_SIZE
+      @outbound_window_size = Atomic(Int32).new(DEFAULT_INITIAL_WINDOW_SIZE)
 
       spawn frame_writer
     end
@@ -76,12 +76,19 @@ module HTTP2
         begin
           # OPTIMIZE: follow stream priority to send frames
           if frame = @channel.receive
-            case frame
-            when Array
-              frame.each { |f| write(f, flush: false) }
-              io.flush
-            else
-              write(frame)
+            begin
+              case frame
+              when Array
+                frame.each do |f|
+                  write(f, flush: false)
+                end
+              else
+                write(frame, flush: false)
+              end
+            ensure
+              # flush pending frames when there are no more frames to send,
+              # otherwise let IO::Buffered do its job:
+              io.flush if @channel.empty?
             end
           else
             io.close unless io.closed?
@@ -107,156 +114,51 @@ module HTTP2
     end
 
     def receive
-      return unless frame = read_frame
+      frame = read_frame_header
       stream = frame.stream
-      stream.receiving(frame) unless frame.type == Frame::Type::PUSH_PROMISE
+
+      stream.receiving(frame)
 
       case frame.type
       when Frame::Type::DATA
         raise Error.protocol_error if stream.id == 0
-        read_padded(frame) do |len|
-          consume_inbound_window_size(len)
-
-          io.read_fully(buf = Slice(UInt8).new(len))
-          stream.data.write(buf)
-
-          if frame.flags.end_stream?
-            stream.data.close_write
-            if content_length = stream.headers["content-length"]?
-              # TODO: how to convey the error to the request handler?
-              raise Error.protocol_error("MALFORMED data frame") unless content_length.to_i == stream.data.size
-            end
-          end
-        end
+        read_data_frame(frame)
 
       when Frame::Type::HEADERS
         raise Error.protocol_error if stream.id == 0
-        read_padded(frame) do |len|
-          if frame.flags.priority?
-            exclusive, dep_stream_id = read_stream_id
-            raise Error.protocol_error("INVALID stream dependency") if stream.id == dep_stream_id
-            weight = read_byte.to_i32 + 1
-            stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
-            logger.debug { "  #{stream.priority.debug}" }
-            len -= 5
-          end
-
-          if stream.data? && !frame.flags.end_stream?
-            raise Error.protocol_error("INVALID trailer part")
-          end
-
-          io.read_fully(buf = Slice(UInt8).new(len))
-          buf = read_headers_payload(frame, buf.to_unsafe, len)
-
-          begin
-            if stream.data?
-              hpack_decoder.decode(buf, stream.trailing_headers)
-            else
-              hpack_decoder.decode(buf, stream.headers)
-            end
-          rescue ex : HPACK::Error
-            logger.debug { "HPACK::Error: #{ex.message}" }
-            raise Error.compression_error
-          end
-
-          if stream.data?
-            # https://tools.ietf.org/html/rfc7540#section-8.1
-            # https://tools.ietf.org/html/rfc7230#section-4.1.2
-            stream.data.close_write
-
-            if content_length = stream.headers["content-length"]?
-              # TODO: how to convey the error to the request handler?
-              raise Error.protocol_error("MALFORMED data frame") unless content_length.to_i == stream.data.size
-            end
-          end
-        end
+        read_headers_frame(frame)
 
       when Frame::Type::PUSH_PROMISE
         raise Error.protocol_error if stream.id == 0
-        read_padded(frame) do |len|
-          _, promised_stream_id = read_stream_id
-          streams.find(promised_stream_id).receiving(frame)
-
-          len -= 4
-          io.read_fully(buf = Slice(UInt8).new(len))
-          buf = read_headers_payload(frame, buf.to_unsafe, len)
-          hpack_decoder.decode(buf, stream.headers)
-        end
+        read_push_promise_frame(frame)
 
       when Frame::Type::PRIORITY
         raise Error.protocol_error if stream.id == 0
-        raise Error.frame_size_error unless frame.size == PRIORITY_FRAME_SIZE
-        exclusive, dep_stream_id = read_stream_id
-        raise Error.protocol_error("INVALID stream dependency") if stream.id == dep_stream_id
-        weight = read_byte.to_i32 + 1
-        stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
-        logger.debug { "  #{stream.priority.debug}" }
+        read_priority_frame(frame)
 
       when Frame::Type::RST_STREAM
         raise Error.protocol_error if stream.id == 0
-        raise Error.frame_size_error unless frame.size == RST_STREAM_FRAME_SIZE
-        error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
-        logger.debug { "  code=#{error_code.to_s}" }
+        read_rst_stream_frame(frame)
 
       when Frame::Type::SETTINGS
         raise Error.protocol_error unless stream.id == 0
-        raise Error.frame_size_error unless frame.size % 6 == 0
-
-        unless frame.flags.ack?
-          remote_settings.parse(io, frame.size / 6) do |id, value|
-            logger.debug { "  #{id}=#{value}" }
-            case id
-            when .header_table_size?
-              hpack_decoder.max_table_size = value
-            when .initial_window_size?
-              difference = value - remote_settings.initial_window_size
-              unless difference == 0
-                # adjust windows size for all control-flow streams
-                streams.each { |stream| stream.increment_outbound_window_size(difference) }
-              end
-            end
-          end
-          send Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
-        end
+        read_settings_frame(frame)
 
       when Frame::Type::PING
         raise Error.protocol_error unless stream.id == 0
-        raise Error.frame_size_error unless frame.size == PING_FRAME_SIZE
-        io.read_fully(buf = Slice(UInt8).new(frame.size))
-        send Frame.new(Frame::Type::PING, streams.find(0), 1, buf) unless frame.flags.ack?
+        read_ping_frame(frame)
 
       when Frame::Type::GOAWAY
-        _, last_stream_id = read_stream_id
-        error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
-        io.read_fully(buf = Slice(UInt8).new(frame.size - 8))
-        error_message = String.new(buf)
-
-        close(notify: false)
-        logger.debug { "  code=#{error_code.to_s}" }
-
-        unless error_code == Error::Code::NO_ERROR
-          raise ClientError.new(error_code, last_stream_id, error_message)
-        end
+        read_goaway_frame(frame)
 
       when Frame::Type::WINDOW_UPDATE
-        raise Error.frame_size_error unless frame.size == WINDOW_UPDATE_FRAME_SIZE
-        buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
-        #reserved = buf.bit(31)
-        window_size_increment = (buf & 0x7fffffff_u32).to_i32
-        raise Error.protocol_error unless MINIMUM_WINDOW_SIZE <= window_size_increment <= MAXIMUM_WINDOW_SIZE
-
-        logger.debug { "  WINDOW_SIZE_INCREMENT=#{window_size_increment}" }
-
-        unless stream.increment_outbound_window_size(window_size_increment)
-          raise Error.flow_control_error if stream.id == 0
-          stream.send_rst_stream(Error::Code::FLOW_CONTROL_ERROR)
-        end
+        read_window_update_frame(frame)
 
       when Frame::Type::CONTINUATION
-        Error.protocol_error("UNEXPECTED continuation frame")
+        raise Error.protocol_error("UNEXPECTED CONTINUATION frame")
 
       else
-        io.skip(frame.size)
+        skip_unsupported_frame(frame)
       end
 
       frame
@@ -279,7 +181,7 @@ module HTTP2
       end
     end
 
-    private def read_frame
+    private def read_frame_header
       buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
       size, type = buf >> 8, buf & 0xff
       flags = read_byte
@@ -289,38 +191,227 @@ module HTTP2
         raise Error.frame_size_error
       end
 
-      unless frame_type = Frame::Type.from_value?(type)
-        logger.warn { "UNSUPPORTED FRAME 0x#{type.to_s(16)}" }
-        io.skip(size)
-        return
-      end
-
+      frame_type = Frame::Type.new(type.to_i)
       unless frame_type.priority? || streams.valid?(stream_id)
         raise Error.protocol_error("INVALID stream_id ##{stream_id}")
       end
+
       stream = streams.find(stream_id, consume: !frame_type.priority?)
       frame = Frame.new(frame_type, stream, flags, size: size)
+
       logger.debug { "recv #{frame.debug(color: :light_cyan)}" }
 
       frame
     end
 
-    private def read_headers_payload(frame, ptr : UInt8*, len)
+    private def read_data_frame(frame)
       stream = frame.stream
+
+      read_padded(frame) do |size|
+        consume_inbound_window_size(size)
+
+        #buffer = Bytes.new(size)
+        #io.read_fully(buffer)
+        #stream.data.write(buffer)
+        stream.data.copy_from(io, size)
+
+        if frame.flags.end_stream?
+          stream.data.close_write
+
+          if content_length = stream.headers["content-length"]?
+            unless content_length.to_i == stream.data.size
+              # stream.send_rst_stream(Error::Code::PROTOCOL_ERROR)
+              raise Error.protocol_error("MALFORMED data frame")
+            end
+          end
+        end
+      end
+    end
+
+    private def read_headers_frame(frame)
+      stream = frame.stream
+
+      read_padded(frame) do |size|
+        if frame.flags.priority?
+          exclusive, dep_stream_id = read_stream_id
+          raise Error.protocol_error("INVALID stream dependency") if stream.id == dep_stream_id
+          weight = read_byte.to_i32 + 1
+          stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
+          logger.debug { "  #{stream.priority.debug}" }
+          size -= 5
+        end
+
+        if stream.data? && !frame.flags.end_stream?
+          raise Error.protocol_error("INVALID trailer part")
+        end
+
+        buffer = read_headers_payload(frame, size)
+
+        begin
+          if stream.data?
+            hpack_decoder.decode(buffer, stream.trailing_headers)
+          else
+            hpack_decoder.decode(buffer, stream.headers)
+          end
+        rescue ex : HPACK::Error
+          logger.debug { "HPACK::Error: #{ex.message}" }
+          raise Error.compression_error
+        end
+
+        if stream.data?
+          # https://tools.ietf.org/html/rfc7540#section-8.1
+          # https://tools.ietf.org/html/rfc7230#section-4.1.2
+          stream.data.close_write
+
+          if content_length = stream.headers["content-length"]?
+            unless content_length.to_i == stream.data.size
+              #connection.send_rst_stream(Error::Code::PROTOCOL_ERROR)
+              raise Error.protocol_error("MALFORMED data frame")
+            end
+          end
+        end
+      end
+    end
+
+    # OPTIMIZE: consider IO::CircularBuffer and decompressing HPACK headers
+    # in-parallel instead of reallocating pointers and eventually
+    # decompressing everything
+    private def read_headers_payload(frame, size)
+      stream = frame.stream
+
+      pointer = GC.malloc_atomic(size).as(UInt8*)
+      io.read_fully(pointer.to_slice(size))
 
       loop do
         break if frame.flags.end_headers?
-        raise Error.protocol_error("EXPECTED continuation frame") unless frame = read_frame
-        raise Error.protocol_error("EXPECTED continuation frame") unless frame.type == Frame::Type::CONTINUATION
-        raise Error.protocol_error("EXPECTED continuation frame for stream ##{stream.id} not ##{frame.stream.id}") unless frame.stream == stream
-        # FIXME: raise if the payload grows too big
 
-        ptr = ptr.realloc(len + frame.size)
-        io.read_fully(Slice(UInt8).new(ptr + len, frame.size))
-        len += frame.size
+        unless frame.type == Frame::Type::CONTINUATION
+          raise Error.protocol_error("EXPECTED continuation frame")
+        end
+        unless frame.stream == stream
+          raise Error.protocol_error("EXPECTED continuation frame for stream ##{stream.id} not ##{frame.stream.id}")
+        end
+
+        # FIXME: raise if the payload grows too big
+        pointer = pointer.realloc(size + frame.size)
+        io.read_fully((pointer + size).to_slice(frame.size))
+
+        size += frame.size
       end
 
-      ptr.to_slice(len)
+      pointer.to_slice(size)
+    end
+
+    private def read_push_promise_frame(frame)
+      stream = frame.stream
+
+      read_padded(frame) do |size|
+        _, promised_stream_id = read_stream_id
+        streams.find(promised_stream_id).receiving(frame)
+        buffer = read_headers_payload(frame, size - 4)
+        hpack_decoder.decode(buffer, stream.headers)
+      end
+    end
+
+    private def read_priority_frame(frame)
+      stream = frame.stream
+      raise Error.frame_size_error unless frame.size == PRIORITY_FRAME_SIZE
+
+      exclusive, dep_stream_id = read_stream_id
+      raise Error.protocol_error("INVALID stream dependency") if stream.id == dep_stream_id
+
+      weight = 1 + read_byte
+      stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
+
+      logger.debug { "  #{stream.priority.debug}" }
+    end
+
+    private def read_rst_stream_frame(frame)
+      raise Error.frame_size_error unless frame.size == RST_STREAM_FRAME_SIZE
+      error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
+      logger.debug { "  code=#{error_code.to_s}" }
+    end
+
+    private def read_settings_frame(frame)
+      raise Error.frame_size_error unless frame.size % 6 == 0
+      return if frame.flags.ack?
+
+      remote_settings.parse(io, frame.size / 6) do |id, value|
+        logger.debug { "  #{id}=#{value}" }
+
+        case id
+        when Settings::Identifier::HEADER_TABLE_SIZE
+          hpack_decoder.max_table_size = value
+
+        when Settings::Identifier::INITIAL_WINDOW_SIZE
+          difference = value - remote_settings.initial_window_size
+
+          unless difference == 0
+            # adjust connection window size
+            increment_outbound_window_size(difference)
+
+            # adjust windows size for all control-flow streams
+            streams.each do |stream|
+              next if stream.id == 0
+              stream.increment_outbound_window_size(difference)
+            end
+          end
+        end
+      end
+
+      # ACK reception of remote SETTINGS:
+      send Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
+    end
+
+    private def read_ping_frame(frame)
+      raise Error.frame_size_error unless frame.size == PING_FRAME_SIZE
+
+      buffer = Bytes.new(frame.size)
+      io.read_fully(buffer)
+
+      if frame.flags.ack?
+        # TODO: validate buffer == previously sent PING value
+      else
+        send Frame.new(Frame::Type::PING, frame.stream, 1, buffer)
+      end
+    end
+
+    private def read_goaway_frame(frame)
+      _, last_stream_id = read_stream_id
+      error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
+
+      buffer = Bytes.new(frame.size - 8)
+      io.read_fully(buffer)
+      error_message = String.new(buffer)
+
+      close(notify: false)
+      logger.debug { "  code=#{error_code.to_s}" }
+
+      unless error_code == Error::Code::NO_ERROR
+        raise ClientError.new(error_code, last_stream_id, error_message)
+      end
+    end
+
+    private def read_window_update_frame(frame)
+      stream = frame.stream
+
+      raise Error.frame_size_error unless frame.size == WINDOW_UPDATE_FRAME_SIZE
+      buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+      # reserved = buf.bit(31)
+      window_size_increment = (buf & 0x7fffffff_u32).to_i32
+      raise Error.protocol_error unless MINIMUM_WINDOW_SIZE <= window_size_increment <= MAXIMUM_WINDOW_SIZE
+
+      logger.debug { "  WINDOW_SIZE_INCREMENT=#{window_size_increment}" }
+
+      if stream.id == 0
+        increment_outbound_window_size(window_size_increment)
+      else
+        stream.increment_outbound_window_size(window_size_increment)
+      end
+    end
+
+    private def skip_unsupported_frame(frame)
+      io.skip(frame.size)
     end
 
     # Sends a frame to the connected peer.
@@ -331,7 +422,7 @@ module HTTP2
     # applies to HEADERS and CONTINUATION frames, otherwise HPACK compression
     # synchronisation could end up corrupted if another HEADERS frame for
     # another stream was sent in between.
-    def send(frame : Frame | Array(Frame))
+    def send(frame : Frame | Array(Frame)) : Nil
       @channel.send(frame) unless @channel.closed?
     end
 
@@ -368,9 +459,39 @@ module HTTP2
       initial_window_size = local_settings.initial_window_size
 
       if @inbound_window_size < (initial_window_size / 2)
+      #if @inbound_window_size <= 0
         increment = Math.min(initial_window_size * streams.active_count(1), MAXIMUM_WINDOW_SIZE)
         @inbound_window_size += increment
         streams.find(0).send_window_update_frame(increment)
+      end
+    end
+
+    protected def outbound_window_size
+      @outbound_window_size.get
+    end
+
+    # Tries to consume *len* bytes from the connection outbound window size, but
+    # may return a lower value, or even 0.
+    protected def consume_outbound_window_size(len)
+      loop do
+        window_size = @outbound_window_size.get
+        return 0 if window_size == 0
+
+        actual = Math.min(len, window_size)
+        _, success = @outbound_window_size.compare_and_set(window_size, window_size - actual)
+        return actual if success
+      end
+    end
+
+    # Increments the connection outbound window size.
+    private def increment_outbound_window_size(increment) : Nil
+      if outbound_window_size.to_i64 + increment > MAXIMUM_WINDOW_SIZE
+        raise Error.flow_control_error
+      end
+      @outbound_window_size.add(increment)
+
+      if outbound_window_size > 0
+        streams.each(&.resume_pending_write)
       end
     end
 
@@ -390,6 +511,7 @@ module HTTP2
           payload.write_bytes(code.to_u32, IO::ByteFormat::BigEndian)
           payload << message
 
+          # FIXME: shouldn't write directly to IO
           write Frame.new(Frame::Type::GOAWAY, streams.find(0), 0, payload.to_slice)
         end
       end
