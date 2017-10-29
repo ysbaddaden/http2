@@ -1,0 +1,4 @@
+.crystal
+.shards
+/lib
+/bin/*
