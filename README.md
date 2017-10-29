@@ -11,7 +11,7 @@ required for HTTP/2 over secure connections.
 - [x] HTTP2 connection, streams, ...
 - [x] HTTP/2 flow control (using implemented circular buffer)
 - [x] support HTTP/2 server connections
-- [x] integrate transparently into `HTTP::Server`
+- [x] ~~integrate transparently into `HTTP::Server`~~ (broken)
 - [ ] ~~integrate into `HTTP::Server::Context` (http version, server-push)~~
 - [x] support HTTP/2 client connections
 - [ ] ~~integrate into `HTTP::Client`~~
