@@ -97,18 +97,7 @@ module HTTP2
         return
       end
       @outbound_window_size += increment
-      resume_pending_write
-    end
-
-    # resume fiber waiting to send data
-    protected def resume_pending_write
-      if (fiber = @fiber) && @outbound_window_size > 0
-        # make sure current fiber will be resumed (later)
-        Scheduler.enqueue(Fiber.current)
-
-        # resume pending fiber immediately
-        fiber.resume
-      end
+      resume_writeable
     end
 
     protected def consume_outbound_window_size(size)
@@ -184,20 +173,25 @@ module HTTP2
     end
 
     def send_data(data : Slice(UInt8), flags = 0) : Nil
-      frame = Frame.new(Frame::Type::DATA, self, Frame::Flags.new(flags.to_u8))
+      frame_flags = Frame::Flags.new(flags.to_u8)
+      if frame_flags.end_stream?
+        end_stream = true
+        frame_flags ^= Frame::Flags::END_STREAM
+      else
+        end_stream = false
+      end
+
+      frame = Frame.new(Frame::Type::DATA, self, frame_flags)
 
       if data.size == 0
         connection.send(frame)
-        Fiber.yield
+        # Fiber.yield
         return
       end
 
       until data.size == 0
         if @outbound_window_size < 1 || connection.outbound_window_size < 1
-          # block fiber until we can send data
-          @fiber = Fiber.current
-          Scheduler.reschedule
-          @fiber = nil
+          wait_writeable
         end
 
         size = {data.size, @outbound_window_size, connection.remote_settings.max_frame_size}.min
@@ -206,20 +200,36 @@ module HTTP2
 
           if actual > 0
             frame.payload = data[0, actual]
-            consume_outbound_window_size(actual)
 
-            connection.send(frame)
+            consume_outbound_window_size(actual)
             data += actual
+
+            frame.flags |= Frame::Flags::END_STREAM if data.size == 0 && end_stream
+            connection.send(frame)
           end
         end
 
-        # OPTIMIZE: maybe we should sleep(0) here, in order to give other
-        # coroutines a chance to send frames? so we can take advantage of
-        # HTTP2 multiplexing? or maybe the Channel and IO are enough?
+        # allow other fibers to do their job (e.g. let the connection send or
+        # receive frames, let other streams send data, ...)
         Fiber.yield
       end
+    end
+
+    # Block current fiber until the stream can send data. I.e. it's window size
+    # or the connection window size has been increased.
+    private def wait_writeable
+      @fiber = Fiber.current
+      Scheduler.reschedule
     ensure
       @fiber = nil
+    end
+
+    # Resume a previously paused fiber waiting to send data, if any.
+    protected def resume_writeable
+      if (fiber = @fiber) && @outbound_window_size > 0
+        Scheduler.enqueue(Fiber.current)
+        fiber.resume
+      end
     end
 
     protected def send_rst_stream(error_code : Error::Code)

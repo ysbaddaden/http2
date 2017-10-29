@@ -209,10 +209,6 @@ module HTTP2
 
       read_padded(frame) do |size|
         consume_inbound_window_size(size)
-
-        #buffer = Bytes.new(size)
-        #io.read_fully(buffer)
-        #stream.data.write(buffer)
         stream.data.copy_from(io, size)
 
         if frame.flags.end_stream?
@@ -285,6 +281,7 @@ module HTTP2
       loop do
         break if frame.flags.end_headers?
 
+        frame = read_frame_header
         unless frame.type == Frame::Type::CONTINUATION
           raise Error.protocol_error("EXPECTED continuation frame")
         end
@@ -346,11 +343,9 @@ module HTTP2
         when Settings::Identifier::INITIAL_WINDOW_SIZE
           difference = value - remote_settings.initial_window_size
 
+          # adjust windows size for all control-flow streams (doesn't affect
+          # the connection window size):
           unless difference == 0
-            # adjust connection window size
-            increment_outbound_window_size(difference)
-
-            # adjust windows size for all control-flow streams
             streams.each do |stream|
               next if stream.id == 0
               stream.increment_outbound_window_size(difference)
@@ -491,7 +486,7 @@ module HTTP2
       @outbound_window_size.add(increment)
 
       if outbound_window_size > 0
-        streams.each(&.resume_pending_write)
+        streams.each(&.resume_writeable)
       end
     end
 
