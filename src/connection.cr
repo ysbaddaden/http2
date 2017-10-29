@@ -8,6 +8,10 @@ require "./settings"
 require "./streams"
 
 class Logger::Dummy < Logger
+  def initialize
+    super File.open("/dev/null")
+  end
+
   {% for name in Logger::Severity.constants %}
     def {{ name.downcase }}?
       false
@@ -28,6 +32,11 @@ module HTTP2
   )
 
   class Connection
+    enum Type
+      CLIENT
+      SERVER
+    end
+
     property local_settings : Settings
     property remote_settings : Settings
     private getter io : IO
@@ -37,7 +46,7 @@ module HTTP2
 
     @logger : Logger?
 
-    def initialize(@io, @logger = nil)
+    def initialize(@io, @type : Type, @logger = nil)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
       @channel = Channel::Buffered(Frame | Array(Frame) | Nil).new
@@ -61,11 +70,11 @@ module HTTP2
     def streams
       # FIXME: thread safety?
       #        can't be in #initialize because of self reference
-      @streams ||= Streams.new(self)
+      @streams ||= Streams.new(self, @type)
     end
 
     def logger
-      @logger ||= Logger::Dummy.new(File.open("/dev/null"))
+      @logger ||= Logger::Dummy.new
     end
 
     def logger=(@logger)
@@ -111,6 +120,10 @@ module HTTP2
         io.read_fully(buf = Slice(UInt8).new(24))
         raise Error.protocol_error("PREFACE expected") unless String.new(buf) == CLIENT_PREFACE
       end
+    end
+
+    def write_client_preface
+      io << CLIENT_PREFACE
     end
 
     def receive
@@ -249,7 +262,11 @@ module HTTP2
             hpack_decoder.decode(buffer, stream.trailing_headers)
           else
             hpack_decoder.decode(buffer, stream.headers)
-            validate_headers(stream.headers)
+            if @type.server?
+              validate_request_headers(stream.headers)
+            else
+              validate_response_headers(stream.headers)
+            end
           end
         rescue ex : HPACK::Error
           logger.debug { "HPACK::Error: #{ex.message}" }
@@ -271,25 +288,8 @@ module HTTP2
       end
     end
 
-    private def validate_headers(headers : HTTP::Headers) : Nil
-      regular = false
-
-      headers.each do |name, value|
-        # special colon (:) headers MUST come before the regular headers
-        regular ||= !name.starts_with?(':')
-
-        if (name.starts_with?(':') && (regular || !REQUEST_PSEUDO_HEADERS.includes?(name))) || ("A".."Z").covers?(name)
-          raise Error.protocol_error("MALFORMED #{name} header")
-        end
-
-        if name == "connection"
-          raise Error.protocol_error("MALFORMED #{name} header")
-        end
-
-        if name == "te" && value != "trailers"
-          raise Error.protocol_error("MALFORMED #{name} header")
-        end
-      end
+    private def validate_request_headers(headers : HTTP::Headers) : Nil
+      validate_headers(headers, REQUEST_PSEUDO_HEADERS)
 
       unless headers.get?(":method").try(&.size) == 1
         raise Error.protocol_error("INVALID :method pseudo-header")
@@ -303,6 +303,31 @@ module HTTP2
         paths = headers.get?(":path")
         unless paths.try(&.size) == 1 && !paths.try(&.first.empty?)
           raise Error.protocol_error("INVALID :path pseudo-header")
+        end
+      end
+    end
+
+    private def validate_response_headers(headers : HTTP::Headers) : Nil
+      validate_headers(headers, RESPONSE_PSEUDO_HEADERS)
+    end
+
+    private def validate_headers(headers : HTTP::Headers, pseudo : Array(String)) : Nil
+      regular = false
+
+      headers.each do |name, value|
+        # special colon (:) headers MUST come before the regular headers
+        regular ||= !name.starts_with?(':')
+
+        if (name.starts_with?(':') && (regular || !pseudo.includes?(name))) || ("A".."Z").covers?(name)
+          raise Error.protocol_error("MALFORMED #{name} header")
+        end
+
+        if name == "connection"
+          raise Error.protocol_error("MALFORMED #{name} header")
+        end
+
+        if name == "te" && value != "trailers"
+          raise Error.protocol_error("MALFORMED #{name} header")
         end
       end
     end

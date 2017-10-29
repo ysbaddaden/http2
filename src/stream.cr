@@ -353,5 +353,10 @@ module HTTP2
     private def state=(@state)
       connection.logger.debug { "; Stream is now #{state}" }
     end
+
+    # :nodoc:
+    def hash(hasher)
+      id.hash(hasher)
+    end
   end
 end

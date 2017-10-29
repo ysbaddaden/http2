@@ -2,13 +2,16 @@ require "./stream"
 
 module HTTP2
   class Streams
-    # FIXME: use even-numbered ids (incoming) and odd-numbered ids (outgoing) when Connection is CLIENT
-
-    def initialize(@connection : Connection)
+    def initialize(@connection : Connection, type : Connection::Type)
       @streams = {} of Int32 => Stream
-      @id_counter = 0
       @mutex = Mutex.new
       @highest_remote_id = 0
+
+      if type.server?
+        @id_counter = 0
+      else
+        @id_counter = -1
+      end
     end
 
     # Finds an incoming stream, silently creating it if it doesn't exist yet.
