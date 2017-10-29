@@ -146,7 +146,7 @@ class HTTP::Server::RequestProcessor
         # don't dispatch twice
         next if stream.trailing_headers?
 
-        headers = validate_http2_headers(stream.headers)
+        headers = stream.headers
         request = Request.new(
           headers[":method"],
           headers[":path"],
@@ -187,43 +187,5 @@ class HTTP::Server::RequestProcessor
     response.close
   ensure
     stream.data.close
-  end
-
-  # TODO: move the following validations to HPACK decoder, using a mecanism
-  #       to validate headers as they are decoded.
-  protected def validate_http2_headers(headers)
-    regular = false
-
-    headers.each do |name, value|
-      # special colon (:) headers MUST come before the regular headers
-      regular ||= !name.starts_with?(':')
-
-      if (name.starts_with?(':') && (regular || !HTTP2::REQUEST_PSEUDO_HEADERS.includes?(name))) || ("A" .. "Z").covers?(name)
-        raise HTTP2::Error.protocol_error("MALFORMED #{name} header")
-      end
-      if name == "connection"
-        raise HTTP2::Error.protocol_error("MALFORMED #{name} header")
-      end
-      if name == "te" && value != "trailers"
-        raise HTTP2::Error.protocol_error("MALFORMED #{name} header")
-      end
-    end
-
-    unless headers.get?(":method").try(&.size) == 1
-      raise HTTP2::Error.protocol_error("INVALID :method pseudo-header")
-    end
-
-    unless headers[":method"] == "CONNECT"
-      unless headers.get?(":scheme").try(&.size) == 1
-        raise HTTP2::Error.protocol_error("INVALID :scheme pseudo-header")
-      end
-
-      paths = headers.get?(":path")
-      unless paths.try(&.size) == 1 && !paths.try(&.first.empty?)
-        raise HTTP2::Error.protocol_error("INVALID :path pseudo-header")
-      end
-    end
-
-    headers
   end
 end

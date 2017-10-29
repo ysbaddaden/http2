@@ -224,6 +224,7 @@ module HTTP2
       end
     end
 
+    # TODO: if HEADERS has END_STREAM flag tell STREAM that it WON'T receive DATA
     private def read_headers_frame(frame)
       stream = frame.stream
 
@@ -248,6 +249,7 @@ module HTTP2
             hpack_decoder.decode(buffer, stream.trailing_headers)
           else
             hpack_decoder.decode(buffer, stream.headers)
+            validate_headers(stream.headers)
           end
         rescue ex : HPACK::Error
           logger.debug { "HPACK::Error: #{ex.message}" }
@@ -265,6 +267,42 @@ module HTTP2
               raise Error.protocol_error("MALFORMED data frame")
             end
           end
+        end
+      end
+    end
+
+    private def validate_headers(headers : HTTP::Headers) : Nil
+      regular = false
+
+      headers.each do |name, value|
+        # special colon (:) headers MUST come before the regular headers
+        regular ||= !name.starts_with?(':')
+
+        if (name.starts_with?(':') && (regular || !REQUEST_PSEUDO_HEADERS.includes?(name))) || ("A".."Z").covers?(name)
+          raise Error.protocol_error("MALFORMED #{name} header")
+        end
+
+        if name == "connection"
+          raise Error.protocol_error("MALFORMED #{name} header")
+        end
+
+        if name == "te" && value != "trailers"
+          raise Error.protocol_error("MALFORMED #{name} header")
+        end
+      end
+
+      unless headers.get?(":method").try(&.size) == 1
+        raise Error.protocol_error("INVALID :method pseudo-header")
+      end
+
+      unless headers[":method"] == "CONNECT"
+        unless headers.get?(":scheme").try(&.size) == 1
+          raise Error.protocol_error("INVALID :scheme pseudo-header")
+        end
+
+        paths = headers.get?(":path")
+        unless paths.try(&.size) == 1 && !paths.try(&.first.empty?)
+          raise Error.protocol_error("INVALID :path pseudo-header")
         end
       end
     end
