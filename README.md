@@ -9,35 +9,36 @@ required for HTTP/2 over secure connections.
 
 - [x] HPACK (including DH compression)
 - [x] HTTP2 connection, streams, ...
-- [ ] HTTP/2 flow control (using implemented circular buffer)
+- [x] HTTP/2 flow control (using implemented circular buffer)
 - [x] support HTTP/2 server connections
 - [x] integrate transparently into `HTTP::Server`
-- [ ] integrate into `HTTP::Server::Context` (http version, server-push)
-- [ ] support HTTP/2 client connections
-- [ ] integrate into `HTTP::Client`
+- [ ] ~~integrate into `HTTP::Server::Context` (http version, server-push)~~
+- [x] support HTTP/2 client connections
+- [ ] ~~integrate into `HTTP::Client`~~
 
 - [x] HPACK tests (HTTP/2 protocol, ...)
 - [ ] HTTP/2 server unit tests (HTTP/2 protocol, ...)
-- [ ] fix failing h2spec tests
+- [ ] HTTP/2 client unit tests (HTTP/2 protocol, ...)
+- [x] fix failing h2spec tests
 
 ## Tests
 
-Build and run the `bin/h` server, then launch
+Build and run the `bin/server` server, then launch
 [h2spec](https://github.com/summerwind/h2spec/releases).
 
 ```sh
-$ make bin/h
+$ make bin/server
 ```
 
 Test against HTTP:
 ```
-$ bin/h
+$ bin/server
 $ ./h2spec -p 9292 -S
 ```
 
 Test against HTTPS:
 ```sh
-$ TLS=true bin/h
+$ TLS=true bin/server
 $ ./h2spec -p 9292 -k -t -S
 ```
 
