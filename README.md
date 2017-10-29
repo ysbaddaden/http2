@@ -8,8 +8,9 @@ required for HTTP/2 over secure connections.
 ## TODO
 
 - [x] HPACK (including DH compression)
-- [x] HTTP2 connection, streams, ...
-- [x] HTTP/2 flow control (using implemented circular buffer)
+- [x] HTTP/2 connection, streams, frames, ...
+- [x] HTTP/2 flow control (in/out, whole-connection, per-stream)
+- [ ] HTTP/2 priority
 - [x] support HTTP/2 server connections
 - [x] ~~integrate transparently into `HTTP::Server`~~ (broken)
 - [ ] ~~integrate into `HTTP::Server::Context` (http version, server-push)~~
@@ -19,7 +20,7 @@ required for HTTP/2 over secure connections.
 - [x] HPACK tests (HTTP/2 protocol, ...)
 - [ ] HTTP/2 server unit tests (HTTP/2 protocol, ...)
 - [ ] HTTP/2 client unit tests (HTTP/2 protocol, ...)
-- [x] fix failing h2spec tests
+- [x] h2spec
 
 ## Tests
 
