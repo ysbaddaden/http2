@@ -16,7 +16,7 @@
 # p io.closed?(IO::CircularBuffer::Closed::Write) # => true
 # p io.closed?(IO::CircularBuffer::Closed::Read)  # => false
 #
-# bytes = Slice(UInt8).new(32)
+# bytes = Bytes.new(32)
 # io.read(bytes) # => 5
 # p io.size      # => 0
 # p bytes        # => Slice[1, 2, 3, 4, 5]
@@ -98,7 +98,7 @@ class IO::CircularBuffer
   # Tries to fill the slice with bytes from the buffer. If the buffer is empty,
   # and the buffer isn't write closed, then the current fiber will block until
   # some bytes are written to the buffer.
-  def read(slice : Slice(UInt8))
+  def read(slice : Bytes)
     read_impl(slice.size) do |len|
       (@buffer + @read_offset).copy_to(slice.to_unsafe, len)
       slice += len
@@ -117,7 +117,7 @@ class IO::CircularBuffer
   # Copies all bytes from the slice to the buffer. If the resulting buffer would
   # end up over capacity, the buffer will be filled, then the current fiber will
   # block until some bytes are read from the buffer.
-  def write(slice : Slice(UInt8))
+  def write(slice : Bytes)
     write_impl(slice.size) do |len|
       (@buffer + @write_offset).copy_from(slice.to_unsafe, len)
       slice += len

@@ -1,10 +1,10 @@
 module HTTP2
   class SliceReader
     getter offset : Int32
-    getter bytes : Slice(UInt8)
+    getter bytes : Bytes
     getter default_endianness : IO::ByteFormat
 
-    def initialize(@bytes : Slice(UInt8), @default_endianness = IO::ByteFormat::SystemEndian)
+    def initialize(@bytes : Bytes, @default_endianness = IO::ByteFormat::SystemEndian)
       @offset = 0
     end
 
@@ -23,12 +23,13 @@ module HTTP2
     {% for type, i in %w(UInt8 Int8 UInt16 Int16 UInt32 Int32 UInt64 Int64) %}
       def read_bytes(type : {{ type.id }}.class, endianness = default_endianness)
         {% size = 2 ** (i / 2) %}
+
         buffer = bytes[offset, {{ size }}]
         @offset += {{ size }}
 
         {% if size > 1 %}
           unless endianness == IO::ByteFormat::SystemEndian
-            buffer = Slice(UInt8).new({{ size }}) { |i| buffer[{{ size - 1 }} - i] }
+            buffer.reverse!
           end
         {% end %}
 

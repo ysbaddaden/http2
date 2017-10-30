@@ -1,13 +1,14 @@
 require "./io/circular_buffer"
 
 module HTTP2
-  # Wraps a circular buffer to buffer incoming DATA. The buffer is initialized
-  # to the window size. The window size decreases whenever reading and a
+  # Wraps a circular buffer to buffer incoming DATA. The buffer capacity is the
+  # initial window size. The stream window size decreases whenever reading and a
   # WINDOW_UPDATE frame will be sent whenever the window size falls below half
   # the buffer size (incremented by half the buffer size).
   class Data
     include IO
 
+    # :nodoc:
     alias Closed = IO::CircularBuffer::Closed
 
     @stream : Stream
@@ -15,7 +16,8 @@ module HTTP2
     @inbound_window_size : Int32
     @size : Int32
 
-    def initialize(@stream, window_size)
+    # :nodoc:
+    protected def initialize(@stream, window_size)
       @inbound_window_size = window_size
       @size = 0
     end
@@ -31,7 +33,7 @@ module HTTP2
     # If window size falls below half buffer capacity, sends a WINDOW_UPDATE
     # frame to increment the window size by half the buffer size, which fits
     # into the buffer's remaining space.
-    def read(slice : Slice(UInt8)) : Int32
+    def read(slice : Bytes) : Int32
       bytes_read = buffer.read(slice)
       @inbound_window_size -= bytes_read
 
@@ -48,13 +50,14 @@ module HTTP2
       bytes_read
     end
 
-    # Buffers *incoming* DATA from HTTP/2 connection.
-    def write(slice : Slice(UInt8))
+    # :nodoc:
+    def write(slice : Bytes)
+      # Buffers *incoming* DATA from HTTP/2 connection.
       @size += slice.size
       buffer.write(slice)
     end
 
-    def copy_from(io : IO, size : Int32)
+    protected def copy_from(io : IO, size : Int32)
       @size += size
       if (buffer.capacity - buffer.size) < size
         raise ArgumentError.new
@@ -62,15 +65,15 @@ module HTTP2
       buffer.copy_from(io, size)
     end
 
-    def close_read
+    def close_read : Nil
       buffer.close(Closed::Read) unless buffer.closed?(Closed::Read)
     end
 
-    def close_write
+    protected def close_write : Nil
       buffer.close(Closed::Write) unless buffer.closed?(Closed::Write)
     end
 
-    def close
+    def close : Nil
       close_read
       close_write
     end

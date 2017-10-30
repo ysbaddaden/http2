@@ -7,9 +7,10 @@ module HTTP2
     property dep_stream_id : Int32
     property weight : Int32
 
-    def initialize(@exclusive, @dep_stream_id, @weight)
+    def initialize(@exclusive : Bool, @dep_stream_id : Int32, @weight : Int32)
     end
 
+    # :nodoc:
     def debug
       "exclusive=#{exclusive} dep_stream_id=#{dep_stream_id} weight=#{weight}"
     end
@@ -27,6 +28,7 @@ module HTTP2
       HALF_CLOSED_REMOTE
       CLOSED
 
+      # :nodoc:
       def to_s(io)
         case self
         when IDLE
@@ -47,39 +49,58 @@ module HTTP2
       end
     end
 
+    # The stream identifier. Odd-numbered for client streams (requests),
+    # even-numbered for server initiated streams (server-push).
     getter id : Int32
     getter state : State
     property priority : Priority
     private getter connection : Connection
     protected getter outbound_window_size : Int32
 
-    def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state : State = State::IDLE)
+    # :nodoc:
+    protected def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state = State::IDLE)
       @outbound_window_size = connection.remote_settings.initial_window_size
     end
 
-    def active?
+    # Returns true if the stream is in an active `#state`, that is OPEN or
+    # HALF_CLOSED (local or remote).
+    def active? : Bool
       state == State::OPEN ||
       state == State::HALF_CLOSED_LOCAL ||
       state == State::HALF_CLOSED_REMOTE
     end
 
-    def data?
+    # Returns true if any DATA was received, false otherwise.
+    #
+    # FIXME: reports `false` if a zero-sized DATA was received.
+    protected def data? : Bool
       data.size != 0
     end
 
-    def data
+    # Received body.
+    #
+    # Implemented as a circular buffer that acts as an `IO`. Reading a request
+    # body will block if the buffer is emptied, and will be resumed when the
+    # connected peer sends more DATA frames.
+    #
+    # See `Data` for more details.
+    def data : Data
       @data ||= Data.new(self, connection.local_settings.initial_window_size)
     end
 
-    def headers
+    # Received HTTP headers. In a server context they are headers of the
+    # received client request; in a client context they are headers of the
+    # received server response.
+    def headers : HTTP::Headers
       @headers ||= HTTP::Headers.new
     end
 
-    def trailing_headers?
-      !!@trailing_headers
+    # Received trailing headers, or `nil` if none have been received (yet).
+    def trailing_headers? : HTTP::Headers?
+      @trailing_headers
     end
 
-    def trailing_headers
+    protected def trailing_headers : HTTP::Headers
       @trailing_headers ||= HTTP::Headers.new
     end
 
@@ -91,7 +112,7 @@ module HTTP2
       false
     end
 
-    def increment_outbound_window_size(increment) : Nil
+    protected def increment_outbound_window_size(increment) : Nil
       if @outbound_window_size.to_i64 + increment > MAXIMUM_WINDOW_SIZE
         send_rst_stream(Error::Code::FLOW_CONTROL_ERROR)
         return
@@ -108,40 +129,65 @@ module HTTP2
       unless MINIMUM_WINDOW_SIZE <= increment <= MAXIMUM_WINDOW_SIZE
         raise Error.protocol_error("invalid WINDOW_UPDATE increment: #{increment}")
       end
-      io = IO::Memory.new
+      io = IO::Memory.new(WINDOW_UPDATE_FRAME_SIZE)
       io.write_bytes(increment.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)
-      connection.send Frame.new(Frame::Type::WINDOW_UPDATE, self, 0, io.to_slice)
+      connection.send Frame.new(Frame::Type::WINDOW_UPDATE, self, payload: io.to_slice)
     end
 
-    def send_priority
+    # Sends a PRIORITY frame for the current `#priority` definition.
+    #
+    # This may only be sent by a client, to hint the server to prioritize some
+    # streams over others. The server may or may not respect the expected
+    # priorities.
+    def send_priority : Nil
       exclusive = priority.exclusive ? 0x80000000_u32 : 0_u32
       dep_stream_id = priority.dep_stream_id.to_u32 & 0x7fffffff_u32
 
-      io = IO::Memory.new
+      io = IO::Memory.new(PRIORITY_FRAME_SIZE)
       io.write_bytes(exclusive | dep_stream_id, IO::ByteFormat::BigEndian)
       io.write_byte((priority.weight - 1).to_u8)
-      io.rewind
 
-      connection.send Frame.new(Frame::Type::PRIORITY, self, 0, io.to_slice)
+      connection.send Frame.new(Frame::Type::PRIORITY, self, payload: io.to_slice)
     end
 
-    def send_headers(headers, flags = 0)
+    # Sends `HTTP::Headers` as part of a response or request.
+    #
+    # This will send a HEADERS frame, possibly followed by CONTINUATION frames.
+    # The `Frame::Flags::END_HEADERS` flag will be automatically set on the last
+    # part; hence you can't send headers multiple times.
+    def send_headers(headers : HTTP::Headers, flags : Frame::Flags = Frame::Flags::None) : Nil
       payload = connection.hpack_encoder.encode(headers)
-      send_headers(Frame::Type::HEADERS, headers, Frame::Flags.new(flags.to_u8), payload)
+      send_headers(Frame::Type::HEADERS, headers, flags, payload)
     end
 
-    def send_push_promise(headers, flags = 0)
-      return unless connection.remote_settings.enable_push
-
+    # Sends `HTTP::Headers` as a server-push request.
+    #
+    # Creates a server initiated stream (even numbered) as the promised stream,
+    # that is the stream that shall be used to push the server-pushed response
+    # headers and data.
+    #
+    # This will send a PUSH_PROMISE frame to the expected stream. If the client
+    # doesn't want the server-push or already has it cached, it may refuse the
+    # server-push request by closing the promised stream immediately.
+    #
+    # Returns the promised stream, or `nil` if the client configured
+    # SETTINGS_ENABLE_PUSH to be false (true by default).
+    #
+    # You may send multiple PUSH_PROMISE frames on an expected stream, but you
+    # may send only one per resource to push.
+    def send_push_promise(headers : HTTP::Headers, flags : Frame::Flags = Frame::Flags::None) : Stream?
+      unless connection.remote_settings.enable_push
+        return
+      end
       connection.streams.create(state: Stream::State::RESERVED_LOCAL).tap do |stream|
         io = IO::Memory.new
         io.write_bytes(stream.id.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)
         payload = connection.hpack_encoder.encode(headers, writer: io)
-        send_headers(Frame::Type::PUSH_PROMISE, headers, Frame::Flags.new(flags.to_u8), payload)
+        send_headers(Frame::Type::PUSH_PROMISE, headers, flags, payload)
       end
     end
 
-    protected def send_headers(type : Frame::Type, headers, flags, payload)
+    protected def send_headers(type : Frame::Type, headers, flags, payload) : Nil
       max_frame_size = connection.remote_settings.max_frame_size
 
       if payload.size <= max_frame_size
@@ -165,27 +211,40 @@ module HTTP2
 
         connection.send(frames.to_a)
       end
-      nil
     end
 
-    def send_data(data : String, flags = 0)
+    # Writes data to the stream.
+    #
+    # This may be part of a request body (client context), or a response body
+    # (server context).
+    #
+    # This will send one or many DATA frames, respecting SETTINGS_MAX_FRAME_SIZE
+    # as defined by the remote peer, as well as available window sizes for the
+    # stream and the connection, exhausting them as much as possible.
+    #
+    # This will block the current fiber if *data* is too big than allowed by any
+    # window size (stream or connection). The fiber will be eventually resumed
+    # when the remote peer sends a WINDOW_UPDATE frame to increment window
+    # sizes.
+    #
+    # Eventually returns when *data* has been fully sent.
+    def send_data(data : String, flags : Frame::Flags = Frame::Flags::None) : Nil
       send_data(data.to_slice, flags)
     end
 
-    def send_data(data : Slice(UInt8), flags = 0) : Nil
-      frame_flags = Frame::Flags.new(flags.to_u8)
-      if frame_flags.end_stream?
+    # ditto
+    def send_data(data : Bytes, flags : Frame::Flags = Frame::Flags::None) : Nil
+      if flags.end_stream? && data.size > 0
         end_stream = true
-        frame_flags ^= Frame::Flags::END_STREAM
+        flags ^= Frame::Flags::END_STREAM
       else
         end_stream = false
       end
 
-      frame = Frame.new(Frame::Type::DATA, self, frame_flags)
+      frame = Frame.new(Frame::Type::DATA, self, flags)
 
       if data.size == 0
         connection.send(frame)
-        # Fiber.yield
         return
       end
 
@@ -216,7 +275,7 @@ module HTTP2
     end
 
     # Block current fiber until the stream can send data. I.e. it's window size
-    # or the connection window size has been increased.
+    # or the connection window size have been increased.
     private def wait_writeable
       @fiber = Fiber.current
       Scheduler.reschedule
@@ -232,11 +291,11 @@ module HTTP2
       end
     end
 
-    protected def send_rst_stream(error_code : Error::Code)
-      io = IO::Memory.new
+    # Closes the stream. Optionally reporting an error status.
+    def send_rst_stream(error_code : Error::Code) : Nil
+      io = IO::Memory.new(RST_STREAM_FRAME_SIZE)
       io.write_bytes(error_code.value.to_u32, IO::ByteFormat::BigEndian)
-      io.rewind
-      connection.send Frame.new(Frame::Type::RST_STREAM, self, 0, io.to_slice)
+      connection.send Frame.new(Frame::Type::RST_STREAM, self, payload:  io.to_slice)
     end
 
     protected def receiving(frame : Frame)
@@ -247,8 +306,7 @@ module HTTP2
       transition(frame, receiving: false)
     end
 
-    # :nodoc:
-    NON_TRANSITIONAL_FRAMES = [
+    private NON_TRANSITIONAL_FRAMES = [
       Frame::Type::PRIORITY,
       Frame::Type::GOAWAY,
       Frame::Type::PING,

@@ -2,7 +2,8 @@ require "./stream"
 
 module HTTP2
   class Streams
-    def initialize(@connection : Connection, type : Connection::Type)
+    # :nodoc:
+    protected def initialize(@connection : Connection, type : Connection::Type)
       @streams = {} of Int32 => Stream
       @mutex = Mutex.new
       @highest_remote_id = 0
@@ -14,13 +15,13 @@ module HTTP2
       end
     end
 
-    # Finds an incoming stream, silently creating it if it doesn't exist yet.
+    # Finds an existing stream, silently creating it if it doesn't exist yet.
     #
-    # Takes care to increment `highest_remote_id` counter, unless `consume` is
-    # set to false, for example a PRIORITY frame forward declares a stream
-    # priority/dependency but doesn't consume the stream identifiers, so they
-    # are still valid.
-    def find(id, consume = true)
+    # Takes care to increment `highest_remote_id` counter for an incoming
+    # stream, unless `consume` is set to false, for example a PRIORITY frame
+    # forward declares a stream priority/dependency but doesn't consume the
+    # stream identifiers, so they are still valid.
+    def find(id : Int32, consume : Bool = true)
       @mutex.synchronize do
         @streams[id] ||= begin
           if max = @connection.local_settings.max_concurrent_streams
@@ -36,14 +37,14 @@ module HTTP2
       end
     end
 
-    def each
+    protected def each
       @mutex.synchronize do
         @streams.each { |_, stream| yield stream }
       end
     end
 
     # Returns true if the incoming stream id is valid for the current connection.
-    def valid?(id)
+    protected def valid?(id : Int32)
       id == 0 || (                   # stream #0 is always valid
         (id % 2) == 1 && (           # incoming streams are odd-numbered
           @streams[id]? ||           # streams already exists
@@ -52,7 +53,8 @@ module HTTP2
       )
     end
 
-    # Creates an outgoing stream.
+    # Creates an outgoing stream. For example to handle a client request or a
+    # server push.
     def create(state = Stream::State::IDLE)
       @mutex.synchronize do
         if max = @connection.remote_settings.max_concurrent_streams
@@ -77,7 +79,7 @@ module HTTP2
       end
     end
 
-    def last_stream_id
+    protected def last_stream_id
       @mutex.synchronize do
         if @streams.any?
           @streams.keys.max

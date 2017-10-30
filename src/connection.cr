@@ -37,16 +37,24 @@ module HTTP2
       SERVER
     end
 
-    property local_settings : Settings
-    property remote_settings : Settings
-    private getter io : IO
+    # ACK frame flag == END_STREAM...
+    private ACK = Frame::Flags::END_STREAM
 
-    getter hpack_encoder : HPACK::Encoder
-    getter hpack_decoder : HPACK::Decoder
+    # Local settings. You may tune local settings prior to establishing the
+    # connection (prior to `#write_settings`) or later on, in which case you
+    # must call `#send_settings` to report changes to the remote peer.
+    getter local_settings : Settings
+
+    # Settings of remote peer. Updated whenever a SETTINGS frame is received.
+    getter remote_settings : Settings
+
+    protected getter hpack_encoder : HPACK::Encoder
+    protected getter hpack_decoder : HPACK::Decoder
+    private getter io : IO
 
     @logger : Logger?
 
-    def initialize(@io, @type : Type, @logger = nil)
+    def initialize(@io : IO, @type : Type, @logger : Logger? = nil)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
       @channel = Channel::Buffered(Frame | Array(Frame) | Nil).new
@@ -67,19 +75,23 @@ module HTTP2
       spawn frame_writer
     end
 
-    def streams
+    # Holds streams associated to the connection. Can be used to find an
+    # existing stream or create a new stream —odd numbered for client requests,
+    # even numbered for server pushed requests.
+    def streams : Streams
       # FIXME: thread safety?
       #        can't be in #initialize because of self reference
       @streams ||= Streams.new(self, @type)
     end
 
-    def logger
+    def logger : Logger
       @logger ||= Logger::Dummy.new
     end
 
-    def logger=(@logger)
+    def logger=(@logger : Logger)
     end
 
+    # TODO: Maybe extract as a nicer struct?
     private def frame_writer
       loop do
         begin
@@ -112,21 +124,43 @@ module HTTP2
       end
     end
 
-    def read_client_preface(truncated = false)
+    # Reads the expected `HTTP2::CLIENT_PREFACE` for a server context.
+    #
+    # You may set *truncated* to true if the request line was already read, for
+    # example when trying to figure out whether the request was a HTTP/1 or
+    # HTTP/2 direct request, where `"PRI * HTTP/2.0\r\n"` was already consumed.
+    def read_client_preface(truncated = false) : Nil
+      raise "can't read HTTP/2 client preface on a client connection" unless @type.server?
       if truncated
-        io.read_fully(buf = Slice(UInt8).new(6))
-        raise Error.protocol_error("PREFACE expected") unless String.new(buf) == CLIENT_PREFACE[-6, 6]
+        buf1 = uninitialized UInt8[8]; buffer = buf1.to_slice
+        preface = CLIENT_PREFACE[-8, 8]
       else
-        io.read_fully(buf = Slice(UInt8).new(24))
-        raise Error.protocol_error("PREFACE expected") unless String.new(buf) == CLIENT_PREFACE
+        buf2 = uninitialized UInt8[24]; buffer = buf2.to_slice
+        preface = CLIENT_PREFACE
+      end
+      io.read_fully(buffer.to_slice)
+      unless String.new(buffer.to_slice) == preface
+        raise Error.protocol_error("PREFACE expected")
       end
     end
 
-    def write_client_preface
+    # Writes the `HTTP2::CLIENT_PREFACE` to initialize an HTTP/2 client
+    # connection.
+    def write_client_preface : Nil
+      raise "can't write HTTP/2 client preface on a server connection" unless @type.client?
       io << CLIENT_PREFACE
     end
 
-    def receive
+    # Call in the main loop to receive individual frames.
+    #
+    # Most frames are already being taken care of, so only HEADERS, DATA or
+    # PUSH_PROMISE frames should really be interesting. Other frames can be
+    # ignored safely.
+    #
+    # Unknown frame types are reported with a raw `Frame#payload`, so a client
+    # or server may handle them (e.g. custom extensions). They can be safely
+    # ignored.
+    def receive : Frame?
       frame = read_frame_header
       stream = frame.stream
 
@@ -171,12 +205,14 @@ module HTTP2
         raise Error.protocol_error("UNEXPECTED CONTINUATION frame")
 
       else
-        skip_unsupported_frame(frame)
+        read_unsupported_frame(frame)
       end
 
       frame
     end
 
+    # Reads padding information and yields the actual frame size without the
+    # padding size. Eventually skips the padding.
     private def read_padded(frame)
       size = frame.size
 
@@ -196,8 +232,8 @@ module HTTP2
 
     private def read_frame_header
       buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
-      size, type = buf >> 8, buf & 0xff
-      flags = read_byte
+      size, type = (buf >> 8).to_i, buf & 0xff
+      flags = Frame::Flags.new(read_byte)
       _, stream_id = read_stream_id
 
       if size > remote_settings.max_frame_size
@@ -418,19 +454,19 @@ module HTTP2
       end
 
       # ACK reception of remote SETTINGS:
-      send Frame.new(Frame::Type::SETTINGS, frame.stream, 0x1)
+      send Frame.new(Frame::Type::SETTINGS, frame.stream, ACK)
     end
 
     private def read_ping_frame(frame)
       raise Error.frame_size_error unless frame.size == PING_FRAME_SIZE
 
-      buffer = Bytes.new(frame.size)
-      io.read_fully(buffer)
+      buffer = uninitialized UInt8[8] # PING_FRAME_SIZE
+      io.read_fully(buffer.to_slice)
 
       if frame.flags.ack?
         # TODO: validate buffer == previously sent PING value
       else
-        send Frame.new(Frame::Type::PING, frame.stream, 1, buffer)
+        send Frame.new(Frame::Type::PING, frame.stream, ACK, buffer.to_slice)
       end
     end
 
@@ -468,24 +504,36 @@ module HTTP2
       end
     end
 
-    private def skip_unsupported_frame(frame)
-      io.skip(frame.size)
+    private def read_unsupported_frame(frame)
+      frame.payload = Bytes.new(frame.size)
+      io.read(frame.payload)
     end
 
     # Sends a frame to the connected peer.
     #
     # One may also send an Array(Frame) for the case when some frames must be
     # sliced (in order to respect max frame size) but must be sent as a single
-    # block (multiplexing would cause a protocol error). So far this only
-    # applies to HEADERS and CONTINUATION frames, otherwise HPACK compression
-    # synchronisation could end up corrupted if another HEADERS frame for
-    # another stream was sent in between.
+    # block (multiplexing would cause a protocol error).
+    #
+    # So far this only applies to HEADERS (and PUSH_PROMISE) and CONTINUATION
+    # frames, otherwise HPACK compression synchronisation could end up corrupted
+    # if another HEADERS frame for another stream was sent in between.
     def send(frame : Frame | Array(Frame)) : Nil
       @channel.send(frame) unless @channel.closed?
     end
 
-    def write_settings
-      write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), 0, local_settings.to_payload)
+    # Immediately writes local settings to the connection.
+    #
+    # This is UNSAFE and MUST only be called for sending the initial SETTINGS
+    # frame. Sending changes to `#local_settings` once the connection
+    # established MUST use `#send_settings` instead!
+    def write_settings : Nil
+      write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), payload: local_settings.to_payload)
+    end
+
+    # Sends a SETTINGS frame for the current `#local_settings` values.
+    def send_settings : Nil
+      send Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), payload: local_settings.to_payload)
     end
 
     private def write(frame : Frame, flush = true)
@@ -553,7 +601,12 @@ module HTTP2
       end
     end
 
-    def close(error = nil, notify = true)
+    # Terminates the HTTP/2 connection.
+    #
+    # This will send a GOAWAY frame if *notify* is true, reporting an
+    # `Error::Code` optional message if present to report an error, or
+    # `Error::Code::NO_ERROR` to terminate the connection cleanly.
+    def close(error : Error? = nil, notify : Bool = true)
       return if closed?
       @closed = true
 
@@ -570,7 +623,7 @@ module HTTP2
           payload << message
 
           # FIXME: shouldn't write directly to IO
-          write Frame.new(Frame::Type::GOAWAY, streams.find(0), 0, payload.to_slice)
+          write Frame.new(Frame::Type::GOAWAY, streams.find(0), payload: payload.to_slice)
         end
       end
 

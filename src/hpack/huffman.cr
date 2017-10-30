@@ -39,7 +39,7 @@ module HTTP2
       end
 
       def encode(string : String)
-        bytes = Slice(UInt8).new(string.bytesize)
+        bytes = Bytes.new(string.bytesize)
         offset = k = 0
 
         string.each_byte do |chr|
@@ -58,7 +58,7 @@ module HTTP2
         bytes[0, count]
       end
 
-      def decode(bytes : Slice(UInt8))
+      def decode(bytes : Bytes)
         io = IO::Memory.new
         node = tree
         eos_padding = true

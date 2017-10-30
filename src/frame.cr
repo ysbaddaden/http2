@@ -48,26 +48,32 @@ module HTTP2
       end
     end
 
-    property type : Type
+    getter type : Type
+    protected setter type : Type
+
     getter stream : Stream
-    property flags : Flags
-    property! payload : Slice(UInt8)
+
+    getter flags : Flags
+    protected setter flags : Flags
+
+    getter! payload : Bytes
+
     @size : Int32?
 
-    def initialize(@type, @stream : Stream, flags = 0_u8, @payload = nil, size = nil)
-      @flags = Flags.new(flags.to_u8)
+    # :nodoc:
+    protected def initialize(@type : Type, @stream : Stream, @flags : Flags = Flags::None, @payload : Bytes? = nil, size : Int32? = nil)
       @size = size.try(&.to_i32)
     end
 
+    # The frame's payload size.
     def size
       @size || payload?.try(&.size) || 0
     end
 
-    # DATA frames are flow-controlled.
-    def flow_controlled?
-      @type.data?
+    protected def payload=(@payload : Bytes)
     end
 
+    # :nodoc:
     def debug(color = nil)
       flags = (type == Type::SETTINGS || type == Type::PING) && @flags.value == 1 ? "ACK" : @flags
       type = if color; @type.colorize(color); else; @type; end
