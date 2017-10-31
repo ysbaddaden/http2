@@ -1,130 +1,158 @@
-# Overloads HTTP::Reponse to support HTTP/2 streams along with HTTP/1
-# connections.
-class HTTP::Server::Response
-  @io : IO?                # HTTP/1
-  @stream : HTTP2::Stream? # HTTP/2
+module HTTP2
+  class Server
+    # :nodoc:
+    abstract class Output
+      include IO::Buffered
 
-  # :nodoc:
-  def initialize(io : IO, @version = "HTTP/1.1")
-    @io = io
-    @headers = Headers.new
-    @status_code = 200
-    @wrote_headers = false
-    @upgraded = false
-    @output = output = @original_output = Output.new(io)
-    output.response = self
-  end
+      def unbuffered_read(bytes : Bytes)
+        raise "can't read from HTTP2::Server::Response"
+      end
 
-  # :nodoc:
-  def initialize(stream : HTTP2::Stream, @version = "HTTP/2.0")
-    @stream = stream
-    @headers = Headers.new
-    @status_code = 200
-    @wrote_headers = false
-    @upgraded = false
-    @output = output = @original_output = StreamOutput.new(stream)
-    output.response = self
-  end
+      def unbuffered_rewind
+        raise "can't rewind HTTP2::Server::Response"
+      end
 
-  def http1?
-    @stream.nil?
-  end
-
-  def http2?
-    @io.nil?
-  end
-
-  # NOTE: HTTP/2 connections can't be upgraded.
-  def upgrade(upgrade = nil, @status_code = 101)
-    if io = @io
-      @upgraded = true
-      headers["Connection"] = "Upgrade"
-      headers["Upgrade"] = upgrade if upgrade
-      write_headers
-      flush
-      yield io
-    else
-      raise "unexpected connection upgrade for #{@version}"
+      # abstract def upgrade(protocol : String, &block)
     end
-  end
 
-  protected def write_headers
-    if io = @io
-      # HTTP/1
-      status_message = HTTP.default_status_message_for(@status_code)
-      io << @version << " " << @status_code << " " << status_message << "\r\n"
-      headers.each do |name, values|
-        values.each do |value|
-          io << name << ": " << value << "\r\n"
+    # :nodoc:
+    class LegacyOutput < Output
+      def initialize(@connection : HTTP1::Connection, @headers : HTTP::Headers)
+        @sent_headers = false
+        @chunked = false
+      end
+
+      def unbuffered_write(bytes : Bytes)
+        unless @sent_headers
+          @sent_headers = true
+          if @connection.version == "HTTP/1.1" && !@headers.has_key?("content-length")
+            @chunked = true
+            @headers.add("transfer-encoding", "chunked")
+          end
+          @connection.send_headers(@headers)
         end
+        @connection.send_data(bytes, @chunked)
       end
-      io << "\r\n"
-    else
-      # HTTP/2
-      raise "unexpected call to write_headers for #{@version}"
-    end
-    @wrote_headers = true
-  end
 
-  # :nodoc:
-  # TODO: cap IO buffer to connection's max_frame_size setting (e.g. 16KB)
-  class StreamOutput
-    include IO::Buffered
-
-    property! response : Response
-
-    def initialize(@stream : HTTP2::Stream)
-      @in_buffer_rem = Slice.new(Pointer(UInt8).null, 0)
-      @out_count = 0
-      @sync = false
-      @flush_on_newline = false
-      @wrote_headers = false
-    end
-
-    def reset
-      raise "can't reset HTTP/2 response"
-    end
-
-    private def unbuffered_read(slice : Slice(UInt8))
-      raise "can't read from HTTP::Server::Response"
-    end
-
-    private def unbuffered_write(slice : Slice(UInt8))
-      ensure_headers_written
-      @stream.send_data(slice)
-    end
-
-    def close
-      unless @wrote_headers || @out_count == 0
-        response.content_length = @out_count
+      def unbuffered_flush
+        @connection.flush
       end
-      ensure_headers_written
-      super
-    end
 
-    private def ensure_headers_written
-      unless @wrote_headers
-        response.headers[":status"] = response.status_code.to_s
+      def close
+        unless @sent_headers
+          @headers["content-length"] = @out_count.to_s
+        end
+        super
+      end
 
-        if response.has_cookies?
-          response.cookies.add_response_headers(response.headers)
+      def unbuffered_close
+        @connection.send_data("", @chunked) if @chunked
+        @connection.flush
+      end
+
+      def upgrade(protocol : String)
+        if @sent_headers
+          raise ArgumentError.new("Can't upgrade HTTP/1 connection: headers have already been sent")
         end
 
-        flags = @out_count == 0 ? HTTP2::Frame::Flags::END_STREAM : HTTP2::Frame::Flags::None
-        @stream.send_headers(response.headers, flags)
+        @headers[":status"] = "101"
+        @headers["connection"] = "Upgrade"
+        @headers["upgrade"] = protocol
+        @connection.send_headers(@headers)
+        @connection.flush
+
+        yield @connection.io
       end
-      @wrote_headers = true
     end
 
-    private def unbuffered_close
-      @stream.send_data(Slice(UInt8).new(0), HTTP2::Frame::Flags::END_STREAM)
+    # :nodoc:
+    class StreamOutput < Output
+      def initialize(@stream : Stream, @headers : HTTP::Headers)
+        @sent_headers = false
+      end
+
+      def unbuffered_write(bytes : Bytes)
+        unless @sent_headers
+          @sent_headers = true
+          @stream.send_headers(@headers)
+        end
+        @stream.send_data(bytes)
+        bytes.size
+      end
+
+      def close
+        unless @sent_headers
+          @headers["content-length"] = @out_count.to_s
+        end
+        super
+      end
+
+      def unbuffered_flush
+      end
+
+      def unbuffered_close
+        @stream.send_data("", flags: Frame::Flags::END_STREAM)
+        @stream.send_rst_stream(HTTP2::Error::Code::NO_ERROR)
+      end
+
+      def upgrade(protocol : String, &block)
+        raise ArgumentError.new("Can't upgrade HTTP/2 connection")
+      end
     end
 
-    private def unbuffered_rewind
-      raise "can't rewind to HTTP::Server::Response"
-    end
+    class Response
+      include IO
 
-    private def unbuffered_flush
+      getter headers : HTTP::Headers
+      property output : IO
+
+      protected def self.new(connection : HTTP1::Connection) : Response
+        headers = HTTP::Headers{":status" => "200"}
+        output = LegacyOutput.new(connection, headers)
+        new(output, headers)
+      end
+
+      protected def self.new(stream : HTTP2::Stream) : Response
+        headers = HTTP::Headers{":status" => "200"}
+        output = StreamOutput.new(stream, headers)
+        new(output, headers)
+      end
+
+      private def initialize(output : Output, @headers)
+        @output = output.as(IO)
+      end
+
+      def status
+        @headers[":status"].to_i
+      end
+
+      def status=(code)
+        @headers[":status"] = code.to_s
+      end
+
+      def upgrade(protocol : String)
+        @output.upgrade(protocol) { |io| yield io }
+      end
+
+      def upgraded?
+        !!@headers["upgrade"]?
+      end
+
+      def read(bytes : Bytes)
+        raise "can't read from HTTP2::Server::Response"
+      end
+
+      def write(bytes : Bytes)
+        @output.write(bytes)
+      end
+
+      def flush
+        @output.flush
+      end
+
+      def close
+        @output.close
+      end
     end
   end
 end

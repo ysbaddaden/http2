@@ -1,21 +1,15 @@
-# Instances of this class are passed to an `HTTP2::Server` handler.
-#
-# Overloads HTTP::Server::Context to add specific HTTP2 support methods. For
-# example direct access to `stream`xi or server-push.
-#
-# TODO: add methods to abstract server-push support
-class HTTP::Server::Context
-  getter! stream : HTTP2::Stream
+require "./request"
+require "./response"
 
-  # :nodoc:
-  def initialize(@request : HTTP::Request, @response : Response, @stream : HTTP2::Stream? = nil)
-  end
+module HTTP2
+  class Server
+    class Context
+      getter request : Request
+      getter response : Response
 
-  def http1?
-    @stream.nil?
-  end
-
-  def http2?
-    !@stream.nil?
+      # :nodoc:
+      protected def initialize(@request, @response)
+      end
+    end
   end
 end

@@ -1,123 +1,48 @@
-require "openssl"
-require "logger"
-require "./src/connection"
+require "./src/server"
 
-module HTTP2
-  class Server
-    @ssl_context : OpenSSL::SSL::Context::Server?
-    @logger : Logger
+class EchoHandler
+  include HTTP2::Server::Handler
 
-    def initialize(host : String, port : Int32, ssl_context = nil, logger = nil)
-      @server = TCPServer.new(host, port)
-      @logger = logger || Logger::Dummy.new
+  def call(context : HTTP2::Server::Context)
+    request, response = context.request, context.response
 
-      if ssl_context
-        ssl_context.alpn_protocol = "h2"
-        @ssl_context = ssl_context
-      end
-    end
+    case request.method
+    when "PUT"
+      if request.path == "/echo"
+        response.headers["server"] = "h2/0.0.0"
 
-    def listen
-      loop do
-        spawn handle_socket(@server.accept)
-      end
-    end
-
-    private def handle_socket(io : IO)
-      if ssl_context = @ssl_context
-        io = OpenSSL::SSL::Socket::Server.new(io, ssl_context)
-      end
-      handle_connection(io)
-    ensure
-      begin
-        io.close unless io.closed?
-      rescue ex : Errno
-        raise ex unless {Errno::EPIPE, Errno::ECONNRESET}.includes?(ex.errno)
-      rescue IO::EOFError | IO::Error
-      end
-    end
-
-    private def handle_connection(io : IO)
-      connection = Connection.new(io, Connection::Type::SERVER, @logger)
-      connection.read_client_preface(truncated: false)
-      connection.write_settings
-
-      frame = connection.receive
-      unless frame.try(&.type) == Frame::Type::SETTINGS
-        raise Error.protocol_error("Expected SETTINGS frame")
-      end
-
-      loop do
-        unless frame = connection.receive
-          next
+        if len = request.content_length
+          response.headers["content-length"] = len.to_s
         end
-        case frame.type
-        when Frame::Type::HEADERS
-          next if frame.stream.trailing_headers? # don't dispatch twice
-          spawn handle_request(frame.stream)
-        when Frame::Type::PUSH_PROMISE
-          raise Error.protocol_error("Unexpected PUSH_PROMISE frame")
-        when Frame::Type::GOAWAY
-          break
+        if type = request.headers["content-type"]?
+          response.headers["content-type"] = type
         end
-      end
-    rescue ex : HTTP2::ClientError
-      @logger.debug { "RECV: #{ex.code}: #{ex.message}" }
-    rescue ex : HTTP2::Error
-      if connection
-        connection.close(error: ex) unless connection.closed?
-      end
-      @logger.debug { "SENT: #{ex.code}: #{ex.message}" }
-    ensure
-      if connection
-        connection.close unless connection.closed?
-      end
-    end
 
-    private def handle_request(stream : Stream)
-      method = stream.headers[":method"]
-      path = stream.headers[":path"]
+        buffer = Bytes.new(8192)
 
-      case method
-      when "PUT"
-        if path == "/echo"
-          headers = HTTP::Headers{
-            ":status" => "200",
-            "server" => "h3/0.0.0",
-            "content-length" => stream.headers["content-length"],
-          }
-
-          if type = stream.headers["content-type"]?
-            headers["content-type"] = type
-          end
-          stream.send_headers(headers)
-
-          buffer = Bytes.new(8192)
-
-          loop do
-            count = stream.data.read(buffer)
-            break if count == 0
-            stream.send_data(buffer[0, count])
-          end
-
-          stream.send_data("", flags: Frame::Flags::END_STREAM)
-          return
+        loop do
+          count = request.body.read(buffer)
+          break if count == 0
+          response.write(buffer[0, count])
         end
+
+        return
       end
-
-      not_found(stream)
-    ensure
-      stream.data.close_read
     end
 
-    private def not_found(stream : Stream)
-      stream.send_headers(HTTP::Headers{
-        ":status" => "404",
-        "content-type" => "text/plain",
-        "server" => "h3/0.0.0",
-      })
-      stream.send_data("404 NOT FOUND", flags: Frame::Flags::END_STREAM)
-    end
+    call_next(context)
+  end
+end
+
+class NotFoundHandler
+  include HTTP2::Server::Handler
+
+  def call(context : HTTP2::Server::Context)
+    response = context.response
+    response.status = 404
+    response.headers["server"] = "h2/0.0.0"
+    response.headers["content-type"] = "text/plain"
+    response << "404 NOT FOUND\n"
   end
 end
 
@@ -135,6 +60,10 @@ end
 host = ENV["HOST"]? || "::"
 port = (ENV["PORT"]? || 9292).to_i
 
+handlers = [
+  EchoHandler.new,
+  NotFoundHandler.new,
+]
 server = HTTP2::Server.new(host, port, ssl_context, logger)
 
 if ssl_context
@@ -142,4 +71,4 @@ if ssl_context
 else
   puts "listening on http://#{host}:#{port}/"
 end
-server.listen
+server.listen(handlers)
