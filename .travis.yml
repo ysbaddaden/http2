@@ -12,7 +12,7 @@ before_install:
   - shards install
 
 install:
-  - make bin/h
+  - make bin/server
   - bin/ci run
 
 script:
