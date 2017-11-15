@@ -1,23 +1,15 @@
-dist: trusty
+language: generic
 sudo: required
 
-language: crystal
+services:
+  - docker
 
 env:
   global:
     - H2SPEC=2.1.0
 
 before_install:
-  - bin/ci setup
-  - shards install
-
-install:
-  - make bin/server
-  - bin/ci run
+  - docker pull ysbaddaden/alpine-crystal
 
 script:
-  - make test
-  - bin/h2spec --strict --port 9393 --tls --insecure
-
-  # NOTE: disabled because of random failures:
-  #- bin/h2spec --strict --port 9292
+  - docker run -it --rm -e CI -e H2SPEC -w /work -v $PWD:/work ysbaddaden/alpine-crystal bin/ci docker

@@ -11,4 +11,8 @@ development_dependencies:
   minitest:
     github: ysbaddaden/minitest.cr
 
+targets:
+  server:
+    main: server.cr
+
 license: Apache-2.0
