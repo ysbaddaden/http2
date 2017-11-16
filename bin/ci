@@ -23,7 +23,7 @@ openssl x509 -req -days 365 -in "ssl/server.csr" -signkey "ssl/server.key" -out 
 PORT=9393 TLS=true bin/server 2>/dev/null &
 
 # run unit tests
-make test
+crystal run test/*_test.cr test/**/*_test.cr
 
 # run HTTP/2 spec suites
 bin/h2spec --strict --port 9393 --tls --insecure
