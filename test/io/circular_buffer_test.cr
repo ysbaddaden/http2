@@ -1,5 +1,5 @@
 require "../test_helper"
-require "../src/io/circular_buffer"
+require "../../src/io/circular_buffer"
 
 class IO::CircularBufferTest < Minitest::Test
   def test_close

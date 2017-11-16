@@ -1,7 +1,7 @@
 module HTTP2
   class Server
     # :nodoc:
-    abstract class Output
+    abstract class Output < IO
       include IO::Buffered
 
       def unbuffered_read(bytes : Bytes)
@@ -100,9 +100,7 @@ module HTTP2
       end
     end
 
-    class Response
-      include IO
-
+    class Response < IO
       getter headers : HTTP::Headers
       property output : IO
 

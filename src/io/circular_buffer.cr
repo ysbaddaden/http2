@@ -40,9 +40,7 @@
 # io = IO::CircularBuffer.new(16)
 # io.read(Bytes.new(8))
 # ```
-class IO::CircularBuffer
-  include IO
-
+class IO::CircularBuffer < IO
   @[Flags]
   enum Closed
     Read

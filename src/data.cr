@@ -5,9 +5,7 @@ module HTTP2
   # initial window size. The stream window size decreases whenever reading and a
   # WINDOW_UPDATE frame will be sent whenever the window size falls below half
   # the buffer size (incremented by half the buffer size).
-  class Data
-    include IO
-
+  class Data < IO
     # :nodoc:
     alias Closed = IO::CircularBuffer::Closed
 
