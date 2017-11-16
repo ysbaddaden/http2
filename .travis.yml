@@ -9,7 +9,7 @@ env:
     - H2SPEC=2.1.0
 
 before_install:
-  - docker pull ysbaddaden/alpine-crystal
+  - docker pull ysbaddaden/crystal-alpine
 
 script:
-  - docker run -it --rm -e CI -e H2SPEC -w /work -v $PWD:/work ysbaddaden/alpine-crystal bin/ci docker
+  - docker run -it --rm -e CI -e H2SPEC -w /work -v $PWD:/work ysbaddaden/crystal-alpine bin/ci docker
