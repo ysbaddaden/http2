@@ -3,6 +3,7 @@ set -e
 set -x
 
 # install dependencies
+apk update
 apk add openssl-dev openssl
 
 # build test server
