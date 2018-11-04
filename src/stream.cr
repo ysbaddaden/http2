@@ -278,7 +278,7 @@ module HTTP2
     # or the connection window size have been increased.
     private def wait_writeable
       @fiber = Fiber.current
-      Scheduler.reschedule
+      Crystal::Scheduler.reschedule
     ensure
       @fiber = nil
     end
@@ -286,7 +286,7 @@ module HTTP2
     # Resume a previously paused fiber waiting to send data, if any.
     protected def resume_writeable
       if (fiber = @fiber) && @outbound_window_size > 0
-        Scheduler.enqueue(Fiber.current)
+        Crystal::Scheduler.enqueue(Fiber.current)
         fiber.resume
       end
     end

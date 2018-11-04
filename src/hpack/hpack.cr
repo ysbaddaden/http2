@@ -88,11 +88,13 @@ module HTTP2
         n2 = 2 ** n - 1
         return integer if integer < n2
 
-        loop do |m|
+        m = 0
+        loop do
           # TODO: raise if integer grows over limit
           byte = reader.read_byte
           integer += (byte & 127).to_i * (2 ** (m * 7))
           break unless byte & 128 == 128
+          m += 1
         end
 
         integer

@@ -166,7 +166,7 @@ class IO::CircularBufferTest < Minitest::Test
       fiber.resume
     end
 
-    Scheduler.reschedule
+    Crystal::Scheduler.reschedule
     assert_equal i, o, "error"
   end
 
@@ -202,7 +202,7 @@ class IO::CircularBufferTest < Minitest::Test
       fiber.resume
     end
 
-    Scheduler.reschedule
+    Crystal::Scheduler.reschedule
     assert_equal i, o, "error"
   end
 

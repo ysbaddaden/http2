@@ -171,14 +171,14 @@ class IO::CircularBuffer < IO
   private def reschedule_read_fiber
     if fiber = @read_fiber
       @read_fiber = nil
-      Scheduler.enqueue(fiber)
+      Crystal::Scheduler.enqueue(fiber)
     end
   end
 
   private def reschedule_write_fiber
     if fiber = @write_fiber
       @write_fiber = nil
-      Scheduler.enqueue(fiber)
+      Crystal::Scheduler.enqueue(fiber)
     end
   end
 
@@ -211,7 +211,7 @@ class IO::CircularBuffer < IO
       return if any? || eof?
 
       @read_fiber = Fiber.current
-      Scheduler.reschedule
+      Crystal::Scheduler.reschedule
     end
   ensure
     @read_fiber = nil
@@ -225,7 +225,7 @@ class IO::CircularBuffer < IO
       return unless full?
 
       @write_fiber = Fiber.current
-      Scheduler.reschedule
+      Crystal::Scheduler.reschedule
     end
   ensure
     @write_fiber = nil
