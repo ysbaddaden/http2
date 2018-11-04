@@ -3,8 +3,10 @@ set -e
 set -x
 
 # install dependencies
+echo @edge http://nl.alpinelinux.org/alpine/edge/main >> /etc/apk/repositories
+echo @edgecommunity http://nl.alpinelinux.org/alpine/edge/community >> /etc/apk/repositories
 apk update
-apk add openssl-dev openssl
+apk add crystal@edgecommunity shards@edgecommunity openssl-dev openssl
 
 # build test server
 shards build
