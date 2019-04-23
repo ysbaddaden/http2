@@ -97,7 +97,7 @@ module HTTP2
     end
 
     def handle_http2_connection(socket, request = nil, raw_settings = nil)
-      connection = Connection.new(socket, logger)
+      connection = Connection.new(socket, Connection::Type::SERVER, logger)
       logger.debug { "Connected" }
 
       if raw_settings

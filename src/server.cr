@@ -117,11 +117,22 @@ module HTTP2
         body = Flate::Reader.new(body, sync_close: true)
       end
 
-      if charset = HTTP.content_type_and_charset(headers).charset
-        body.set_encoding(charset, invalid: :skip)
-      end
+      check_content_type_charset(body, headers)
 
       body
+    end
+
+    private def check_content_type_charset(body, headers)
+      content_type = headers["Content-Type"]?
+      return unless content_type
+
+      mime_type = MIME::MediaType.parse?(content_type)
+      return unless mime_type
+
+      charset = mime_type["charset"]?
+      return unless charset
+
+      body.set_encoding(charset, invalid: :skip)
     end
 
     private def bad_request(io) : Nil
