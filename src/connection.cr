@@ -362,7 +362,7 @@ module HTTP2
           raise Error.protocol_error("MALFORMED #{name} header")
         end
 
-        if name == "te" && value != "trailers"
+        if name == "te" && !(value == "trailers" || value == %w[trailers])
           raise Error.protocol_error("MALFORMED #{name} header")
         end
       end
