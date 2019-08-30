@@ -83,7 +83,7 @@ module HTTP1
 
     def send_headers(headers : HTTP::Headers)
       status = headers[":status"]
-      message = HTTP.default_status_message_for(status.to_i)
+      message = HTTP::Status.new(status.to_i).description
       @io << @version << ' ' << status << ' ' << message << "\r\n"
 
       headers.each do |name, values|
