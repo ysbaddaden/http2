@@ -67,7 +67,7 @@ module HTTP2
 
     # :nodoc:
     class StreamOutput < Output
-      def initialize(@stream : Stream, @headers : HTTP::Headers)
+      def initialize(@stream : Stream, @headers : HTTP::Headers, @trailing_headers : HTTP::Headers)
         @sent_headers = false
       end
 
@@ -78,6 +78,10 @@ module HTTP2
         end
         @stream.send_data(bytes)
         bytes.size
+
+        if @trailing_headers.any?
+          @stream.send_headers @trailing_headers
+        end
       end
 
       def close
@@ -102,21 +106,23 @@ module HTTP2
 
     class Response < IO
       getter headers : HTTP::Headers
+      getter trailing_headers : HTTP::Headers
       property output : IO
 
       protected def self.new(connection : HTTP1::Connection) : Response
         headers = HTTP::Headers{":status" => "200"}
         output = LegacyOutput.new(connection, headers)
-        new(output, headers)
+        new(output, headers, HTTP::Headers.new)
       end
 
       protected def self.new(stream : HTTP2::Stream) : Response
         headers = HTTP::Headers{":status" => "200"}
-        output = StreamOutput.new(stream, headers)
-        new(output, headers)
+        trailing_headers = HTTP::Headers.new
+        output = StreamOutput.new(stream, headers, trailing_headers)
+        new(output, headers, trailing_headers)
       end
 
-      private def initialize(output : Output, @headers)
+      private def initialize(output : Output, @headers, @trailing_headers)
         @output = output.as(IO)
       end
 
