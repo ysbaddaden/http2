@@ -144,7 +144,7 @@ class IO::CircularBufferTest < Minitest::Test
   end
 
   def test_read_and_write_over_capacity_slices
-    i = Bytes.new(1 * 1024 * 1024) { |i| i.to_u8 }
+    i = Bytes.new(1 * 1024 * 1024) { |i| i.to_u8! }
     o = Bytes.new(1 * 1024 * 1024)
     cb = IO::CircularBuffer.new(64 * 1024)
 
@@ -171,7 +171,7 @@ class IO::CircularBufferTest < Minitest::Test
   end
 
   def test_read_and_write_arbitrary_sized_chunks
-    i = Bytes.new(1 * 1024 * 1024) { |i| i.to_u8 }
+    i = Bytes.new(1 * 1024 * 1024) { |i| i.to_u8! }
     o = Bytes.new(1 * 1024 * 1024)
     cb = IO::CircularBuffer.new(64 * 1024)
 
