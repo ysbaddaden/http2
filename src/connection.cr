@@ -57,7 +57,7 @@ module HTTP2
     def initialize(@io : IO, @type : Type, @logger : Logger? = nil)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
-      @channel = Channel::Buffered(Frame | Array(Frame) | Nil).new
+      @channel = Channel(Frame | Array(Frame) | Nil).new(10)
       @closed = false
 
       @hpack_encoder = HPACK::Encoder.new(
