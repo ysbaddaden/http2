@@ -36,7 +36,7 @@ module HTTP2
       @inbound_window_size -= bytes_read
 
       unless bytes_read == 0
-        increment = buffer.capacity # / 2
+        increment = buffer.capacity # // 2
 
         #if @inbound_window_size <= increment
         if @inbound_window_size <= 0

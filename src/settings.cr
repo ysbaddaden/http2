@@ -68,7 +68,7 @@ module HTTP2
     end
 
     def parse(bytes : Bytes) : Nil
-      parse(IO::Memory.new(bytes), bytes.size / 6) do |id, value|
+      parse(IO::Memory.new(bytes), bytes.size // 6) do |id, value|
         yield id, value
       end
     end

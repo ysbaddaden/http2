@@ -195,7 +195,7 @@ module HTTP2
         frame = Frame.new(type, self, flags, payload)
         connection.send(frame)
       else
-        num = (payload.size / max_frame_size.to_f).ceil.to_i
+        num = (payload.size / max_frame_size).ceil.to_i
         count = max_frame_size
         offset = 0
 

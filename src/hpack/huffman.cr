@@ -47,7 +47,7 @@ module HTTP2
 
           (len - 1).downto(0) do |i|
             j = offset % 8
-            k = offset / 8 if j == 0
+            k = offset // 8 if j == 0
             bytes[k] |= 128 >> j if binary.bit(i) == 1
             offset += 1
           end

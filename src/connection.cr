@@ -432,7 +432,7 @@ module HTTP2
       raise Error.frame_size_error unless frame.size % 6 == 0
       return if frame.flags.ack?
 
-      remote_settings.parse(io, frame.size / 6) do |id, value|
+      remote_settings.parse(io, frame.size // 6) do |id, value|
         logger.debug { "  #{id}=#{value}" }
 
         case id
@@ -564,7 +564,7 @@ module HTTP2
       @inbound_window_size -= len
       initial_window_size = local_settings.initial_window_size
 
-      if @inbound_window_size < (initial_window_size / 2)
+      if @inbound_window_size < (initial_window_size // 2)
       #if @inbound_window_size <= 0
         increment = Math.min(initial_window_size * streams.active_count(1), MAXIMUM_WINDOW_SIZE)
         @inbound_window_size += increment

@@ -22,7 +22,7 @@ module HTTP2
 
     {% for type, i in %w(UInt8 Int8 UInt16 Int16 UInt32 Int32 UInt64 Int64) %}
       def read_bytes(type : {{ type.id }}.class, endianness = default_endianness)
-        {% size = 2 ** (i / 2) %}
+        {% size = 2 ** (i // 2) %}
 
         buffer = bytes[offset, {{ size }}]
         @offset += {{ size }}
