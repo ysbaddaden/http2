@@ -350,7 +350,7 @@ module HTTP2
     private def validate_headers(headers : HTTP::Headers, pseudo : Array(String)) : Nil
       regular = false
 
-      headers.each do |name, value|
+      headers.each_key do |name|
         # special colon (:) headers MUST come before the regular headers
         regular ||= !name.starts_with?(':')
 
@@ -362,7 +362,7 @@ module HTTP2
           raise Error.protocol_error("MALFORMED #{name} header")
         end
 
-        if name == "te" && value != "trailers"
+        if name == "te" && headers["te"] != "trailers"
           raise Error.protocol_error("MALFORMED #{name} header")
         end
       end

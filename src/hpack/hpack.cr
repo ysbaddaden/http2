@@ -4,6 +4,14 @@ require "./static_table"
 require "./dynamic_table"
 require "../slice_reader"
 
+module HTTP
+  struct Headers
+    def each_key
+      @hash.each_key { |key| yield key.name }
+    end
+  end
+end
+
 module HTTP2
   module HPACK
     @[Flags]
