@@ -109,7 +109,9 @@ module HTTP2
             ensure
               # flush pending frames when there are no more frames to send,
               # otherwise let IO::Buffered do its job:
-              io.flush if @channel.empty?
+              #
+              # NOTE: accessing internal @queue until Channel#empty? makes a comeback
+              io.flush if @channel.@queue.not_nil!.empty?
             end
           else
             io.close unless io.closed?
