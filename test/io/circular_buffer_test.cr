@@ -70,10 +70,10 @@ class IO::CircularBufferTest < Minitest::Test
     buf2 = Bytes.new(16)
     cb = IO::CircularBuffer.new(32)
 
-    assert_equal 16, cb.write(buf)
+    cb.write(buf)
     assert_equal 16, cb.size
 
-    assert_equal 16, cb.write(buf)
+    cb.write(buf)
     assert_equal 32, cb.size
 
     assert_equal 16, cb.read(buf2)
@@ -91,7 +91,7 @@ class IO::CircularBufferTest < Minitest::Test
 
     1.upto(10) do |i|
       buf = Bytes.new(16) { |j| j.to_u8 * i }
-      assert_equal 16, cb.write(buf)
+      cb.write(buf)
       assert_equal 16, cb.read(buf2)
       assert_equal buf2, buf
     end
@@ -103,10 +103,10 @@ class IO::CircularBufferTest < Minitest::Test
     buf3 = Bytes.new(32)
 
     cb = IO::CircularBuffer.new(32)
-    assert_equal 32, cb.write(buf1)
+    cb.write(buf1)
 
     spawn do
-      assert_equal 32, cb.write(buf2)
+      cb.write(buf2)
     end
 
     cb.read(buf3)
@@ -136,7 +136,7 @@ class IO::CircularBufferTest < Minitest::Test
     cb.write(buf)
     cb.skip(8)
 
-    assert_equal 16, cb.write(buf[0, 16])
+    cb.write(buf[0, 16])
     cb.skip(16)
 
     cb.read(buf2)
@@ -182,8 +182,8 @@ class IO::CircularBufferTest < Minitest::Test
 
       loop do
         len = Math.min(rand(1024 .. (16 * 1024)), i.size - count)
-        count += cb.write(i[count, len])
-        break if count == i.size
+        cb.write(i[count, len])
+        break if (count += len) == i.size
       end
 
       cb.close(IO::CircularBuffer::Closed::Write)
