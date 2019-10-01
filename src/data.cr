@@ -49,7 +49,7 @@ module HTTP2
     end
 
     # :nodoc:
-    def write(slice : Bytes)
+    def write(slice : Bytes) : Nil
       # Buffers *incoming* DATA from HTTP/2 connection.
       @size += slice.size
       buffer.write(slice)

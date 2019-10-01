@@ -140,7 +140,7 @@ module HTTP2
         raise "can't read from HTTP2::Server::Response"
       end
 
-      def write(bytes : Bytes)
+      def write(bytes : Bytes) : Nil
         @output.write(bytes)
       end
 

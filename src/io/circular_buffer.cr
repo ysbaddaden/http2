@@ -115,7 +115,7 @@ class IO::CircularBuffer < IO
   # Copies all bytes from the slice to the buffer. If the resulting buffer would
   # end up over capacity, the buffer will be filled, then the current fiber will
   # block until some bytes are read from the buffer.
-  def write(slice : Bytes)
+  def write(slice : Bytes) : Nil
     write_impl(slice.size) do |len|
       (@buffer + @write_offset).copy_from(slice.to_unsafe, len)
       slice += len
