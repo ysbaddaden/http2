@@ -1,15 +1,12 @@
-language: generic
-sudo: required
+dist: xenial
+language: crystal
 
-services:
-  - docker
+crystal:
+  - latest
 
 env:
   global:
     - H2SPEC=2.1.0
 
-before_install:
-  - docker pull ysbaddaden/crystal:alpine
-
 script:
-  - docker run -it --rm -e CI -e H2SPEC -w /work -v $PWD:/work ysbaddaden/crystal:alpine bin/ci docker
+  - bin/ci

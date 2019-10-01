@@ -2,9 +2,6 @@
 set -e
 set -x
 
-# install openssl 1.0.2+
-apk add openssl-dev
-
 # build test server
 shards build
 
