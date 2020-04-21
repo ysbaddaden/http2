@@ -6,28 +6,25 @@ class EchoHandler
   def call(context : HTTP2::Server::Context)
     request, response = context.request, context.response
 
-    case request.method
-    when "PUT"
-      if request.path == "/echo"
-        response.headers["server"] = "h2/0.0.0"
+    if request.method == "PUT" && request.path == "/echo"
+      response.headers["server"] = "h2/0.0.0"
 
-        if len = request.content_length
-          response.headers["content-length"] = len.to_s
-        end
-        if type = request.headers["content-type"]?
-          response.headers["content-type"] = type
-        end
-
-        buffer = Bytes.new(8192)
-
-        loop do
-          count = request.body.read(buffer)
-          break if count == 0
-          response.write(buffer[0, count])
-        end
-
-        return
+      if len = request.content_length
+        response.headers["content-length"] = len.to_s
       end
+      if type = request.headers["content-type"]?
+          response.headers["content-type"] = type
+      end
+
+      buffer = Bytes.new(8192)
+
+      loop do
+        count = request.body.read(buffer)
+        break if count == 0
+        response.write(buffer[0, count])
+      end
+
+      return
     end
 
     call_next(context)
@@ -53,8 +50,7 @@ if ENV["TLS"]?
 end
 
 unless ENV["CI"]?
-  logger = Logger.new(STDOUT)
-  logger.level = Logger::DEBUG
+  HTTP2::Log.level = Log::Severity::Debug
 end
 
 host = ENV["HOST"]? || "::"
@@ -64,7 +60,7 @@ handlers = [
   EchoHandler.new,
   NotFoundHandler.new,
 ]
-server = HTTP2::Server.new(host, port, ssl_context, logger)
+server = HTTP2::Server.new(host, port, ssl_context)
 
 if ssl_context
   puts "listening on https://#{host}:#{port}/"

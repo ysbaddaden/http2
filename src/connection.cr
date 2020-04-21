@@ -1,29 +1,11 @@
 require "colorize"
-require "logger"
+require "./log"
 require "./config"
 require "./errors"
 require "./frame"
 require "./hpack"
 require "./settings"
 require "./streams"
-
-class Logger::Dummy < Logger
-  def initialize
-    super File.open("/dev/null")
-  end
-
-  {% for name in Logger::Severity.constants %}
-    def {{ name.downcase }}?
-      false
-    end
-
-    def {{ name.downcase }}(message)
-    end
-
-    def {{ name.downcase }}(&block)
-    end
-  {% end %}
-end
 
 module HTTP2
   DEFAULT_SETTINGS = Settings.new(
@@ -52,9 +34,7 @@ module HTTP2
     protected getter hpack_decoder : HPACK::Decoder
     private getter io : IO
 
-    @logger : Logger?
-
-    def initialize(@io : IO, @type : Type, @logger : Logger? = nil)
+    def initialize(@io : IO, @type : Type)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
       @channel = Channel(Frame | Array(Frame) | Nil).new(10)
@@ -82,13 +62,6 @@ module HTTP2
       # FIXME: thread safety?
       #        can't be in #initialize because of self reference
       @streams ||= Streams.new(self, @type)
-    end
-
-    def logger : Logger
-      @logger ||= Logger::Dummy.new
-    end
-
-    def logger=(@logger : Logger)
     end
 
     # TODO: Maybe extract as a nicer struct?
@@ -120,8 +93,7 @@ module HTTP2
         rescue Channel::ClosedError
           break
         rescue ex
-          #logger.debug { "#{ex.class.name} #{ex.message}:\n#{ex.backtrace.join('\n')}" }
-          logger.debug { "ERROR: #{ex.class.name} #{ex.message}" }
+          Log.error(exception: ex) {}
         end
       end
     end
@@ -250,7 +222,7 @@ module HTTP2
       stream = streams.find(stream_id, consume: !frame_type.priority?)
       frame = Frame.new(frame_type, stream, flags, size: size)
 
-      logger.debug { "recv #{frame.debug(color: :light_cyan)}" }
+      Log.debug { "recv #{frame.debug(color: :light_cyan)}" }
 
       frame
     end
@@ -285,7 +257,7 @@ module HTTP2
           raise Error.protocol_error("INVALID stream dependency") if stream.id == dep_stream_id
           weight = read_byte.to_i32 + 1
           stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
-          logger.debug { "  #{stream.priority.debug}" }
+          Log.debug { "  #{stream.priority.debug}" }
           size -= 5
         end
 
@@ -307,7 +279,7 @@ module HTTP2
             end
           end
         rescue ex : HPACK::Error
-          logger.debug { "HPACK::Error: #{ex.message}" }
+          Log.debug { "HPACK::Error: #{ex.message}" }
           raise Error.compression_error
         end
 
@@ -421,13 +393,13 @@ module HTTP2
       weight = 1 + read_byte
       stream.priority = Priority.new(exclusive == 1, dep_stream_id, weight)
 
-      logger.debug { "  #{stream.priority.debug}" }
+      Log.debug { "  #{stream.priority.debug}" }
     end
 
     private def read_rst_stream_frame(frame)
       raise Error.frame_size_error unless frame.size == RST_STREAM_FRAME_SIZE
       error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
-      logger.debug { "  code=#{error_code.to_s}" }
+      Log.debug { "  code=#{error_code.to_s}" }
     end
 
     private def read_settings_frame(frame)
@@ -435,7 +407,7 @@ module HTTP2
       return if frame.flags.ack?
 
       remote_settings.parse(io, frame.size // 6) do |id, value|
-        logger.debug { "  #{id}=#{value}" }
+        Log.debug { "  #{id}=#{value}" }
 
         case id
         when Settings::Identifier::HEADER_TABLE_SIZE
@@ -452,6 +424,8 @@ module HTTP2
               stream.increment_outbound_window_size(difference)
             end
           end
+        else
+          # shut up, crystal
         end
       end
 
@@ -481,7 +455,7 @@ module HTTP2
       error_message = String.new(buffer)
 
       close(notify: false)
-      logger.debug { "  code=#{error_code.to_s}" }
+      Log.debug { "  code=#{error_code.to_s}" }
 
       unless error_code == Error::Code::NO_ERROR
         raise ClientError.new(error_code, last_stream_id, error_message)
@@ -497,7 +471,7 @@ module HTTP2
       window_size_increment = (buf & 0x7fffffff_u32).to_i32
       raise Error.protocol_error unless MINIMUM_WINDOW_SIZE <= window_size_increment <= MAXIMUM_WINDOW_SIZE
 
-      logger.debug { "  WINDOW_SIZE_INCREMENT=#{window_size_increment}" }
+      Log.debug { "  WINDOW_SIZE_INCREMENT=#{window_size_increment}" }
 
       if stream.id == 0
         increment_outbound_window_size(window_size_increment)
@@ -542,7 +516,7 @@ module HTTP2
       size = frame.payload?.try(&.size.to_u32) || 0_u32
       stream = frame.stream
 
-      logger.debug { "send #{frame.debug(color: :light_magenta)}" }
+      Log.debug { "send #{frame.debug(color: :light_magenta)}" }
       stream.sending(frame) unless frame.type == Frame::Type::PUSH_PROMISE
 
       io.write_bytes((size << 8) | frame.type.to_u8, IO::ByteFormat::BigEndian)

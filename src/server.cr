@@ -2,7 +2,6 @@ require "base64"
 require "flate"
 require "gzip"
 #require "io/hexdump"
-require "logger"
 require "openssl"
 require "./connection"
 require "./server/handler"
@@ -12,12 +11,10 @@ require "./server/context"
 module HTTP2
   class Server
     @handler : Handler?
-    @logger : Logger
     @ssl_context : OpenSSL::SSL::Context::Server?
 
-    def initialize(host : String, port : Int32, ssl_context = nil, logger = nil)
+    def initialize(host : String, port : Int32, ssl_context = nil)
       @server = TCPServer.new(host, port)
-      @logger = logger || Logger::Dummy.new
 
       if ssl_context
         ssl_context.alpn_protocol = "h2"
@@ -115,6 +112,8 @@ module HTTP2
         body = Gzip::Reader.new(body, sync_close: true)
       when "deflate"
         body = Flate::Reader.new(body, sync_close: true)
+      else
+        # shut up, crystal
       end
 
       check_content_type_charset(body, headers)
@@ -149,12 +148,12 @@ module HTTP2
     end
 
     private def handle_http2_connection(io, request = nil, settings = nil, alpn = nil) : Nil
-      connection = Connection.new(io, Connection::Type::SERVER, @logger)
+      connection = Connection.new(io, Connection::Type::SERVER)
 
       if settings
         # HTTP/1 => HTTP/2 upgrade: we got settings
         connection.remote_settings.parse(settings) do |setting, value|
-          @logger.debug { "  #{setting}=#{value}" }
+          Log.debug { "  #{setting}=#{value}" }
         end
       end
 
@@ -188,15 +187,17 @@ module HTTP2
           raise Error.protocol_error("Unexpected PUSH_PROMISE frame")
         when Frame::Type::GOAWAY
           break
+        else
+          # shut up, crystal
         end
       end
     rescue ex : HTTP2::ClientError
-      @logger.debug { "RECV: #{ex.code}: #{ex.message}" }
+      Log.debug { "RECV: #{ex.code}: #{ex.message}" }
     rescue ex : HTTP2::Error
       if connection
         connection.close(error: ex) unless connection.closed?
       end
-      @logger.debug { "SENT: #{ex.code}: #{ex.message}" }
+      Log.debug { "SENT: #{ex.code}: #{ex.message}" }
     ensure
       if connection
         connection.close unless connection.closed?

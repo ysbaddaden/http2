@@ -5,9 +5,9 @@ require "./src/connection"
 module HTTP2
   class Client
     @connection : Connection
-    @requests = {} of Stream => Channel::Unbuffered(Nil)
+    @requests = {} of Stream => Channel(Nil)
 
-    def initialize(host : String, port : Int32, ssl_context, logger = nil)
+    def initialize(host : String, port : Int32, ssl_context)
       @authority = "#{host}:#{port}"
 
       io = TCPSocket.new(host, port)
@@ -26,7 +26,7 @@ module HTTP2
         @scheme = "http"
       end
 
-      connection = Connection.new(io, Connection::Type::CLIENT, logger || Logger::Dummy.new)
+      connection = Connection.new(io, Connection::Type::CLIENT)
       connection.write_client_preface
       connection.write_settings
 
@@ -51,6 +51,8 @@ module HTTP2
           # TODO: got SERVER PUSHed headers
         when Frame::Type::GOAWAY
           break
+        else
+          # shut up, crystal
         end
       end
     end
@@ -60,7 +62,7 @@ module HTTP2
       headers[":scheme"] ||= @scheme
 
       stream = @connection.streams.create
-      @requests[stream] = Channel::Unbuffered(Nil).new
+      @requests[stream] = Channel(Nil).new
 
       stream.send_headers(headers)
       @requests[stream].receive
@@ -82,10 +84,9 @@ module HTTP2
   end
 end
 
-logger = Logger.new(STDOUT)
-logger.level = Logger::DEBUG
+Log.for("http2").level = Log::Severity::Debug
 
-client = HTTP2::Client.new("localhost", 9292, !!ENV["TLS"]?, logger)
+client = HTTP2::Client.new("localhost", 9292, !!ENV["TLS"]?)
 
 10.times do |i|
   headers = HTTP::Headers{
