@@ -101,8 +101,8 @@ module HTTP2
     ensure
       begin
         io.close if must_close
-      rescue ex : Errno
-        raise ex unless {Errno::EPIPE, Errno::ECONNRESET}.includes?(ex.errno)
+      #rescue ex : Errno
+      #  raise ex unless {Errno::EPIPE, Errno::ECONNRESET}.includes?(ex.errno)
       rescue IO::EOFError | IO::Error
       end
     end
