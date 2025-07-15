@@ -2,3 +2,4 @@
 .shards
 /lib
 /bin/*
+/ssl

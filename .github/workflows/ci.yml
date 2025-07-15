@@ -1,0 +1,51 @@
+name: Continuous Integration
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+    branches:
+      - "**"
+
+  pull_request:
+    branches:
+      - "**:**"
+
+  release:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+      - run: shards install
+      - run: timeout 5m make test
+
+  h2spec:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+
+      - run: shards build -Dh2spec
+      - run: ./bin/server &
+
+      - run: wget -O - "https://github.com/summerwind/h2spec/releases/download/v2.6.0/h2spec_linux_amd64.tar.gz" | tar zx -C bin
+      - run: ./bin/h2spec --version
+      - run: timeout 5m ./bin/h2spec --strict --port 9292 --insecure
+
+  h2spec_tls:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+
+      - run: shards build -Dh2spec
+      - run: make ssl
+      - run: TLS=1 ./bin/server &
+
+      - run: curl -L "https://github.com/summerwind/h2spec/releases/download/v2.6.0/h2spec_linux_amd64.tar.gz" | tar zx -C bin
+      - run: ./bin/h2spec --version
+      - run: timeout 5m ./bin/h2spec --strict --port 9292 --insecure
+

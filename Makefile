@@ -29,6 +29,3 @@ ssl: .PHONY
 
 test: .PHONY
 	$(CRYSTAL) run $(CRFLAGS) test/*_test.cr test/**/*_test.cr
-
-#h2spec:
-#	bin/h2spec -p 9292 -t -k -S
