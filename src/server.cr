@@ -30,13 +30,10 @@ module HTTP2
     end
 
     private def handle_socket(io : IO) : Nil
-      must_close = true
-
       if ssl_context = @ssl_context
         io = OpenSSL::SSL::Socket::Server.new(io, ssl_context)
 
         if io.alpn_protocol == "h2"
-          must_close = false
           return handle_http2_connection(io, alpn: "h2")
         end
       end
@@ -66,7 +63,6 @@ module HTTP2
 
           if settings = http2_upgrade?(headers)
             connection.upgrade("h2c")
-            must_close = false
             return handle_http2_connection(connection.io, request, Base64.decode(settings), alpn: "h2c")
           end
 
@@ -77,7 +73,6 @@ module HTTP2
           handle_request(context)
 
           if response.upgraded?
-            must_close = false
             break
           end
 
@@ -86,7 +81,6 @@ module HTTP2
           end
         when "HTTP/2.0"
           if method == "PRI" && path == "*"
-            must_close = false
             return handle_http2_connection(io)
           else
             return bad_request(io)
@@ -98,7 +92,7 @@ module HTTP2
       end
     ensure
       begin
-        io.close if must_close
+        io.close
       #rescue ex : Errno
       #  raise ex unless {Errno::EPIPE, Errno::ECONNRESET}.includes?(ex.errno)
       rescue IO::EOFError | IO::Error

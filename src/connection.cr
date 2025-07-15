@@ -1,4 +1,5 @@
 require "colorize"
+require "mutex"
 require "./log"
 require "./config"
 require "./errors"
@@ -37,7 +38,7 @@ module HTTP2
     def initialize(@io : IO, @type : Type)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
-      @channel = Channel(Frame | Array(Frame)).new(10)
+      @mutex = Mutex.new(:unchecked)
       @closed = false
 
       @hpack_encoder = HPACK::Encoder.new(
@@ -51,8 +52,6 @@ module HTTP2
 
       @inbound_window_size = DEFAULT_INITIAL_WINDOW_SIZE
       @outbound_window_size = Atomic(Int32).new(DEFAULT_INITIAL_WINDOW_SIZE)
-
-      spawn frame_writer
     end
 
     # Holds streams associated to the connection. Can be used to find an
@@ -62,36 +61,6 @@ module HTTP2
       # FIXME: thread safety?
       #        can't be in #initialize because of self reference
       @streams ||= Streams.new(self, @type)
-    end
-
-    # TODO: Maybe extract as a nicer struct?
-    private def frame_writer
-      loop do
-        begin
-          # OPTIMIZE: follow stream priority to send frames
-          if frame = @channel.receive?
-            begin
-              case frame
-              when Array
-                frame.each { |f| write(f, flush: false) }
-              else
-                write(frame, flush: false)
-              end
-            ensure
-              # flush pending frames when there are no more frames to send,
-              # otherwise let IO::Buffered do its job:
-              #
-              # NOTE: accessing internal @queue until Channel#empty? makes a comeback
-              io.flush if @channel.@queue.not_nil!.empty?
-            end
-          else
-            io.close unless io.closed?
-            break
-          end
-        rescue ex
-          Log.error(exception: ex) {}
-        end
-      end
     end
 
     # Reads the expected `HTTP2::CLIENT_PREFACE` for a server context.
@@ -493,7 +462,15 @@ module HTTP2
     # frames, otherwise HPACK compression synchronisation could end up corrupted
     # if another HEADERS frame for another stream was sent in between.
     def send(frame : Frame | Array(Frame)) : Nil
-      @channel.send(frame) unless @channel.closed?
+      @mutex.synchronize do
+        case frame
+        in Frame
+          write(frame)
+        in Array(Frame)
+          frame.each { |f| write(f, flush: false) }
+          io.flush
+        end
+      end
     end
 
     # Immediately writes local settings to the connection.
@@ -521,12 +498,12 @@ module HTTP2
       io.write_byte(frame.flags.to_u8)
       io.write_bytes(stream.id.to_u32, IO::ByteFormat::BigEndian)
 
-      if payload = frame.payload?
-        io.write(payload) if payload.size > 0
+      if (payload = frame.payload?) && (payload.size > 0)
+        io.write(payload)
       end
 
       if flush
-        io.flush #unless io.sync?
+        io.flush
       end
     end
 
@@ -580,30 +557,33 @@ module HTTP2
     # This will send a GOAWAY frame if *notify* is true, reporting an
     # `Error::Code` optional message if present to report an error, or
     # `Error::Code::NO_ERROR` to terminate the connection cleanly.
+    #
+    # NOTE: doesn't close the IO, only the HTTP/2 connection.
     def close(error : Error? = nil, notify : Bool = true)
       return if closed?
-      @closed = true
 
-      unless io.closed?
-        if notify
-          if error
-            message, code = error.message || "", error.code
-          else
-            message, code = "", Error::Code::NO_ERROR
+      @mutex.synchronize do
+        unless closed?
+          @closed = true
+
+          unless io.closed? || !notify
+            if error
+              message, code = error.message || "", error.code
+            else
+              message, code = "", Error::Code::NO_ERROR
+            end
+
+            payload = IO::Memory.new(8 + message.bytesize)
+            payload.write_bytes(streams.last_stream_id.to_u32, IO::ByteFormat::BigEndian)
+            payload.write_bytes(code.to_u32, IO::ByteFormat::BigEndian)
+            payload << message
+
+            write Frame.new(Frame::Type::GOAWAY, streams.find(0), payload: payload.to_slice)
           end
-          payload = IO::Memory.new(8 + message.bytesize)
-          payload.write_bytes(streams.last_stream_id.to_u32, IO::ByteFormat::BigEndian)
-          payload.write_bytes(code.to_u32, IO::ByteFormat::BigEndian)
-          payload << message
-
-          # FIXME: shouldn't write directly to IO
-          write Frame.new(Frame::Type::GOAWAY, streams.find(0), payload: payload.to_slice)
         end
       end
-
-      unless @channel.closed?
-        @channel.close
-      end
+    rescue IO::Error
+      # silence
     end
 
     def closed?
