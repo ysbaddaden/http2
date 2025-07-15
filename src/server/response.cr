@@ -50,7 +50,7 @@ module HTTP2
         @connection.flush
       end
 
-      def upgrade(protocol : String)
+      def upgrade(protocol : String, &)
         if @sent_headers
           raise ArgumentError.new("Can't upgrade HTTP/1 connection: headers have already been sent")
         end
@@ -128,7 +128,7 @@ module HTTP2
         @headers[":status"] = code.to_s
       end
 
-      def upgrade(protocol : String)
+      def upgrade(protocol : String, &)
         @output.upgrade(protocol) { |io| yield io }
       end
 

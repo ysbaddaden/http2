@@ -5,12 +5,12 @@ module HTTP2
   class Settings
     # See https://tools.ietf.org/html/rfc7540#section-11.3
     enum Identifier : UInt16
-      HEADER_TABLE_SIZE = 0x1
-      ENABLE_PUSH = 0x2
+      HEADER_TABLE_SIZE      = 0x1
+      ENABLE_PUSH            = 0x2
       MAX_CONCURRENT_STREAMS = 0x3
-      INITIAL_WINDOW_SIZE = 0x4
-      MAX_FRAME_SIZE = 0x5
-      MAX_HEADER_LIST_SIZE = 0x6
+      INITIAL_WINDOW_SIZE    = 0x4
+      MAX_FRAME_SIZE         = 0x5
+      MAX_HEADER_LIST_SIZE   = 0x6
     end
 
     setter header_table_size : Int32
@@ -35,7 +35,7 @@ module HTTP2
       @max_concurrent_streams = nil,
       @initial_window_size = nil,
       @max_frame_size = nil,
-      @max_header_list_size = nil
+      @max_header_list_size = nil,
     )
     end
 
@@ -67,13 +67,13 @@ module HTTP2
       @max_frame_size = size
     end
 
-    def parse(bytes : Bytes) : Nil
+    def parse(bytes : Bytes, &) : Nil
       parse(IO::Memory.new(bytes), bytes.size // 6) do |id, value|
         yield id, value
       end
     end
 
-    def parse(io : IO, size : Int32) : Nil
+    def parse(io : IO, size : Int32, &) : Nil
       size.times do |i|
         id = Identifier.from_value?(io.read_bytes(UInt16, IO::ByteFormat::BigEndian))
         value = io.read_bytes(UInt32, IO::ByteFormat::BigEndian).to_i32

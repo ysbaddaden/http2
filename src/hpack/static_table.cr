@@ -1,6 +1,5 @@
 module HTTP2
   module HPACK
-
     # :nodoc:
     STATIC_TABLE = [
       {":authority", ""},
@@ -68,6 +67,5 @@ module HTTP2
 
     # :nodoc:
     STATIC_TABLE_SIZE = STATIC_TABLE.size
-
   end
 end

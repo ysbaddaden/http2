@@ -6,7 +6,7 @@ require "../slice_reader"
 
 module HTTP
   struct Headers
-    def each_key
+    def each_key(&)
       @hash.each_key { |key| yield key.name }
     end
   end
@@ -17,9 +17,9 @@ module HTTP2
     @[Flags]
     enum Indexing : UInt8
       INDEXED = 128_u8
-      ALWAYS = 64_u8
-      NEVER = 16_u8
-      NONE = 0_u8
+      ALWAYS  =  64_u8
+      NEVER   =  16_u8
+      NONE    =   0_u8
     end
 
     class Error < Exception

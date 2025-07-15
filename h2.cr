@@ -22,7 +22,7 @@ module HTTP2
       end
     end
 
-    @logger : Logger|Logger::Dummy|Nil
+    @logger : Logger | Logger::Dummy | Nil
 
     def logger
       @logger ||= Logger.new(STDOUT).tap do |logger|
@@ -61,10 +61,10 @@ module HTTP2
       logger.debug { "#{ex.class.name}: #{ex.message}" }
     rescue ex
       logger.debug { "#{ex.class.name}: #{ex.message}\n#{ex.backtrace.join('\n')}" }
-      #logger.debug { "#{ex.class.name}: #{ex.message}" }
+      # logger.debug { "#{ex.class.name}: #{ex.message}" }
     ensure
       # FIXME: OpenSSL::SSL::Socket is missing a closed? method
-      socket.close #unless socket.closed?
+      socket.close # unless socket.closed?
     end
 
     def handle_http1_connection(socket, method, resource, protocol)
@@ -134,7 +134,7 @@ module HTTP2
 
           headers.each do |name, value|
             regular ||= !name.starts_with?(':')
-            if (name.starts_with?(':') && (regular || !REQUEST_PSEUDO_HEADERS.includes?(name))) || ("A" .. "Z").covers?(name)
+            if (name.starts_with?(':') && (regular || !REQUEST_PSEUDO_HEADERS.includes?(name))) || ("A".."Z").covers?(name)
               raise Error.protocol_error("MALFORMED #{name} header")
             end
             if name == "connection"
@@ -159,24 +159,19 @@ module HTTP2
 
           req = HTTP::Request.new(headers[":method"], headers[":path"], headers, version: "HTTP/2.0")
           spawn handle_http2_request(frame.stream, req)
-
         when Frame::Type::PUSH_PROMISE
           raise Error.protocol_error("UNEXPECTED push promise frame")
-
         when Frame::Type::GOAWAY
           break
         end
       end
-
     rescue err : ClientError
       logger.debug { "#{err.code}: #{err.message}" }
-
     rescue err : Error
       if connection
         connection.close(error: err) unless connection.closed?
       end
       logger.debug { "#{err.code}: #{err.message}" }
-
     ensure
       if connection
         connection.close unless connection.closed?
@@ -187,26 +182,26 @@ module HTTP2
     def handle_http2_request(stream, request)
       if %w(POST PATCH PUT).includes?(request.method)
         while line = stream.data.gets
-          logger.debug {  "data: #{line.inspect}" }
+          logger.debug { "data: #{line.inspect}" }
         end
       end
 
       authority = request.headers[":authority"]? || request.headers["Host"]
       scheme = request.headers[":scheme"]? || "http"
 
-      #appjs = stream.send_push_promise(HTTP::Headers{
+      # appjs = stream.send_push_promise(HTTP::Headers{
       #  ":method" => "GET",
       #  ":path" => "/javascripts/application.js",
       #  ":authority" => authority,
       #  ":scheme" => scheme,
       #  "content-type" => "application/javascript",
-      #})
-      #favicon = stream.send_push_promise(HTTP::Headers{
+      # })
+      # favicon = stream.send_push_promise(HTTP::Headers{
       #  ":method" => "GET",
       #  ":path" => "/favicon.ico",
       #  ":authority" => authority,
       #  ":scheme" => scheme,
-      #})
+      # })
 
       status, headers, body = handle_request(request)
       headers[":status"] = status
@@ -219,24 +214,25 @@ module HTTP2
         stream.send_data("", Frame::Flags::END_STREAM)
       end
 
-      #if appjs && appjs.try(&.state) != Stream::State::CLOSED
+      # if appjs && appjs.try(&.state) != Stream::State::CLOSED
       #  appjs.send_headers(HTTP::Headers{
       #     ":status" => "200",
       #     "content-type" => "application/javascript",
       #  })
       #  appjs.send_data("(function () { console.log('server push!'); }());", Frame::Flags::END_STREAM)
-      #end
-      #if favicon && favicon.try(&.state) != Stream::State::CLOSED
+      # end
+      # if favicon && favicon.try(&.state) != Stream::State::CLOSED
       #  favicon.send_headers(HTTP::Headers{ ":status" => "404" }, Frame::Flags::END_STREAM)
-      #end
+      # end
+
     ensure
       stream.data.close
     end
 
     def handle_http1_request(socket, request)
       if size = request.headers["content-length"]?
-        #socket.read_fully(buf = Slice(UInt8).new(size.to_i))
-        #p String.new(buf)
+        # socket.read_fully(buf = Slice(UInt8).new(size.to_i))
+        # p String.new(buf)
         socket.skip(size.to_i)
       end
 
@@ -255,7 +251,7 @@ module HTTP2
 
       headers = HTTP::Headers{
         "content-type" => "text/html",
-        "server" => "h2/0.1.0"
+        "server"       => "h2/0.1.0",
       }
       body = <<-HTML
         <!DOCTYPE html>

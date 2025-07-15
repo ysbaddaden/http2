@@ -9,7 +9,7 @@ module HTTP2::HPACK
 
     # http://tools.ietf.org/html/rfc7541#appendix-C.2.1
     def test_literal_header_with_indexing
-      headers = HTTP::Headers{ "custom-key" => "custom-header" }
+      headers = HTTP::Headers{"custom-key" => "custom-header"}
       assert_equal slice(0x40, 0x0a, 0x63, 0x75, 0x73, 0x74, 0x6f, 0x6d, 0x2d,
                          0x6b, 0x65, 0x79, 0x0d, 0x63, 0x75, 0x73, 0x74, 0x6f,
                          0x6d, 0x2d, 0x68, 0x65, 0x61, 0x64, 0x65, 0x72),
@@ -21,7 +21,7 @@ module HTTP2::HPACK
 
     # http://tools.ietf.org/html/rfc7541#appendix-C.2.2
     def test_literal_header_without_indexing
-      headers = HTTP::Headers{ ":path" => "/sample/path" }
+      headers = HTTP::Headers{":path" => "/sample/path"}
       assert_equal slice(0x04, 0x0c, 0x2f, 0x73, 0x61, 0x6d, 0x70, 0x6c, 0x65,
                          0x2f, 0x70, 0x61, 0x74, 0x68),
                          e.encode(headers, Indexing::NONE)
@@ -30,7 +30,7 @@ module HTTP2::HPACK
 
     # http://tools.ietf.org/html/rfc7541#appendix-C.2.3
     def test_literal_header_never_indexed
-      headers = HTTP::Headers{ "password" => "secret" }
+      headers = HTTP::Headers{"password" => "secret"}
       assert_equal slice(0x10, 0x08, 0x70, 0x61, 0x73, 0x73, 0x77, 0x6f, 0x72,
                          0x64, 0x06, 0x73, 0x65, 0x63, 0x72, 0x65, 0x74),
                          e.encode(headers, Indexing::NEVER)
@@ -39,19 +39,19 @@ module HTTP2::HPACK
 
     # http://tools.ietf.org/html/rfc7541#appendix-C.2.4
     def test_indexed_header_field
-      assert_equal slice(0x82), e.encode(HTTP::Headers{ ":method" => "GET" })
+      assert_equal slice(0x82), e.encode(HTTP::Headers{":method" => "GET"})
       assert_empty e.table
     end
 
     def test_large_integer_literal
-      bytes = e.encode(HTTP::Headers{ "x-dummy1" => "." * 4096 }, Indexing::NONE, huffman: false)
+      bytes = e.encode(HTTP::Headers{"x-dummy1" => "." * 4096}, Indexing::NONE, huffman: false)
       assert_equal slice(0x00, 0x08, 'x'.ord, '-'.ord, 'd'.ord, 'u'.ord, 'm'.ord, 'm'.ord, 'y'.ord, '1'.ord), bytes[0, 10]
       assert_equal slice(0x7f, 0x81, 0x1f), bytes[10, 3]
       assert_equal ("." * 4096).to_slice, bytes[13, bytes.size - 13]
     end
 
     def test_edge_integer_literal
-      bytes = e.encode(HTTP::Headers{ "x-dummy1" => "." * 127 }, Indexing::NONE, huffman: false)
+      bytes = e.encode(HTTP::Headers{"x-dummy1" => "." * 127}, Indexing::NONE, huffman: false)
       assert_equal slice(0x7f, 0x00), bytes[10, 2]
       assert_equal ("." * 127).to_slice, bytes[12, bytes.size - 12]
     end
@@ -60,7 +60,7 @@ module HTTP2::HPACK
       e = Encoder.new(indexing: Indexing::ALWAYS, huffman: false)
       headers = HTTP::Headers{
         "cache-control" => "private",
-        ":status" => "302",
+        ":status"       => "302",
       }
       assert_equal slice(
         0x48, 0x03, 0x33, 0x30, 0x32,
@@ -74,10 +74,10 @@ module HTTP2::HPACK
 
       # first response:  http://tools.ietf.org/html/rfc7541#appendix-C.5.1
       headers = HTTP::Headers{
-        ":status" => "302",
+        ":status"       => "302",
         "cache-control" => "private",
-        "date" => "Mon, 21 Oct 2013 20:13:21 GMT",
-        "location" => "https://www.example.com",
+        "date"          => "Mon, 21 Oct 2013 20:13:21 GMT",
+        "location"      => "https://www.example.com",
       }
       assert_equal slice(
         0x48, 0x03, 0x33, 0x30, 0x32,
@@ -95,10 +95,10 @@ module HTTP2::HPACK
 
       # second response:  http://tools.ietf.org/html/rfc7541#appendix-C.5.2
       headers = HTTP::Headers{
-        ":status" => "307",
+        ":status"       => "307",
         "cache-control" => "private",
-        "date" => "Mon, 21 Oct 2013 20:13:21 GMT",
-        "location" => "https://www.example.com",
+        "date"          => "Mon, 21 Oct 2013 20:13:21 GMT",
+        "location"      => "https://www.example.com",
       }
       assert_equal slice(0x48, 0x03, 0x33, 0x30, 0x37, 0xc1, 0xc0, 0xbf),
         e.encode(headers)
@@ -112,12 +112,12 @@ module HTTP2::HPACK
 
       # third response:  http://tools.ietf.org/html/rfc7541#appendix-C.5.3
       headers = HTTP::Headers{
-        ":status" => "200",
-        "cache-control" => "private",
-        "date" => "Mon, 21 Oct 2013 20:13:22 GMT",
-        "location" => "https://www.example.com",
+        ":status"          => "200",
+        "cache-control"    => "private",
+        "date"             => "Mon, 21 Oct 2013 20:13:22 GMT",
+        "location"         => "https://www.example.com",
         "content-encoding" => "gzip",
-        "set-cookie" => "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+        "set-cookie"       => "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
       }
       assert_equal slice(0x88, 0xc1, 0x61, 0x1d, 0x4d, 0x6f, 0x6e, 0x2c, 0x20,
                          0x32, 0x31, 0x20, 0x4f, 0x63, 0x74, 0x20, 0x32, 0x30,
@@ -144,10 +144,10 @@ module HTTP2::HPACK
 
       # first response:  http://tools.ietf.org/html/rfc7541#appendix-C.6.1
       headers = HTTP::Headers{
-        ":status" => "302",
+        ":status"       => "302",
         "cache-control" => "private",
-        "date" => "Mon, 21 Oct 2013 20:13:21 GMT",
-        "location" => "https://www.example.com",
+        "date"          => "Mon, 21 Oct 2013 20:13:21 GMT",
+        "location"      => "https://www.example.com",
       }
       assert_equal slice(0x48, 0x82, 0x64, 0x02, 0x58, 0x85, 0xae, 0xc3, 0x77,
                          0x1a, 0x4b, 0x61, 0x96, 0xd0, 0x7a, 0xbe, 0x94, 0x10,
@@ -166,10 +166,10 @@ module HTTP2::HPACK
 
       # second response:  http://tools.ietf.org/html/rfc7541#appendix-C.6.2
       headers = HTTP::Headers{
-        ":status" => "307",
+        ":status"       => "307",
         "cache-control" => "private",
-        "date" => "Mon, 21 Oct 2013 20:13:21 GMT",
-        "location" => "https://www.example.com",
+        "date"          => "Mon, 21 Oct 2013 20:13:21 GMT",
+        "location"      => "https://www.example.com",
       }
       assert_equal slice(0x48, 0x83, 0x64, 0x0e, 0xff, 0xc1, 0xc0, 0xbf),
         e.encode(headers)
@@ -183,12 +183,12 @@ module HTTP2::HPACK
 
       # third response:  http://tools.ietf.org/html/rfc7541#appendix-C.6.3
       headers = HTTP::Headers{
-        ":status" => "200",
-        "cache-control" => "private",
-        "date" => "Mon, 21 Oct 2013 20:13:22 GMT",
-        "location" => "https://www.example.com",
+        ":status"          => "200",
+        "cache-control"    => "private",
+        "date"             => "Mon, 21 Oct 2013 20:13:22 GMT",
+        "location"         => "https://www.example.com",
         "content-encoding" => "gzip",
-        "set-cookie" => "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+        "set-cookie"       => "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
       }
       assert_equal slice(0x88, 0xc1, 0x61, 0x96, 0xd0, 0x7a, 0xbe, 0x94, 0x10,
                          0x54, 0xd4, 0x44, 0xa8, 0x20, 0x05, 0x95, 0x04, 0x0b,

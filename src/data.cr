@@ -38,7 +38,7 @@ module HTTP2
       unless bytes_read == 0
         increment = buffer.capacity # // 2
 
-        #if @inbound_window_size <= increment
+        # if @inbound_window_size <= increment
         if @inbound_window_size <= 0
           @inbound_window_size += increment
           @stream.send_window_update_frame(increment)

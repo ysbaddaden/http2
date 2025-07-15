@@ -154,7 +154,7 @@ module HTTP2
 
     # Reads padding information and yields the actual frame size without the
     # padding size. Eventually skips the padding.
-    private def read_padded(frame)
+    private def read_padded(frame, &)
       size = frame.size
 
       if frame.flags.padded?
@@ -257,7 +257,7 @@ module HTTP2
 
           if content_length = stream.headers["content-length"]?
             unless content_length.to_i == stream.data.size
-              #connection.send_rst_stream(Error::Code::PROTOCOL_ERROR)
+              # connection.send_rst_stream(Error::Code::PROTOCOL_ERROR)
               raise Error.protocol_error("MALFORMED data frame")
             end
           end
@@ -515,8 +515,8 @@ module HTTP2
       @inbound_window_size -= len
       initial_window_size = local_settings.initial_window_size
 
+      # if @inbound_window_size <= 0
       if @inbound_window_size < (initial_window_size // 2)
-      #if @inbound_window_size <= 0
         increment = Math.min(initial_window_size * streams.active_count(1), MAXIMUM_WINDOW_SIZE)
         @inbound_window_size += increment
         streams.find(0).send_window_update_frame(increment)

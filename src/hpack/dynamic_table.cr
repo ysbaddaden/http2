@@ -25,11 +25,11 @@ module HTTP2
         @table[index]?
       end
 
-      def each
+      def each(&)
         @table.each { |header, index| yield header, index }
       end
 
-      def each_with_index
+      def each_with_index(&)
         @table.each_with_index { |header, index| yield header, index }
       end
 

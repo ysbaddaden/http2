@@ -57,7 +57,7 @@ module HTTP2
       end
     end
 
-    def request(headers : HTTP::Headers)
+    def request(headers : HTTP::Headers, &)
       headers[":authority"] = @authority
       headers[":scheme"] ||= @scheme
 
@@ -90,9 +90,9 @@ client = HTTP2::Client.new("localhost", 9292, !!ENV["TLS"]?)
 
 10.times do |i|
   headers = HTTP::Headers{
-    ":method" => "GET",
-    ":path" => "/",
-    "user-agent" => "crystal h2/0.0.0"
+    ":method"    => "GET",
+    ":path"      => "/",
+    "user-agent" => "crystal h2/0.0.0",
   }
 
   client.request(headers) do |headers, body|

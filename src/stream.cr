@@ -66,8 +66,8 @@ module HTTP2
     # HALF_CLOSED (local or remote).
     def active? : Bool
       state == State::OPEN ||
-      state == State::HALF_CLOSED_LOCAL ||
-      state == State::HALF_CLOSED_REMOTE
+        state == State::HALF_CLOSED_LOCAL ||
+        state == State::HALF_CLOSED_REMOTE
     end
 
     # Returns true if any DATA was received, false otherwise.
@@ -295,7 +295,7 @@ module HTTP2
     def send_rst_stream(error_code : Error::Code) : Nil
       io = IO::Memory.new(RST_STREAM_FRAME_SIZE)
       io.write_bytes(error_code.value.to_u32, IO::ByteFormat::BigEndian)
-      connection.send Frame.new(Frame::Type::RST_STREAM, self, payload:  io.to_slice)
+      connection.send Frame.new(Frame::Type::RST_STREAM, self, payload: io.to_slice)
     end
 
     protected def receiving(frame : Frame)
@@ -363,16 +363,15 @@ module HTTP2
         else
           error!(receiving)
         end
-
       when State::HALF_CLOSED_LOCAL
-        #if sending
-        #  case frame.type
-        #  when Frame::Type::HEADERS, Frame::Type::CONTINUATION, Frame::Type::DATA
-        #    raise Error.stream_closed("STREAM #{id} is #{state}")
-        #  else
-        #    # shut up, crystal
-        #  end
-        #end
+        # if sending
+        #   case frame.type
+        #   when Frame::Type::HEADERS, Frame::Type::CONTINUATION, Frame::Type::DATA
+        #     raise Error.stream_closed("STREAM #{id} is #{state}")
+        #   else
+        #     # shut up, crystal
+        #   end
+        # end
         if frame.flags.end_stream? || frame.type == Frame::Type::RST_STREAM
           self.state = State::CLOSED
         end

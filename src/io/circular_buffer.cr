@@ -131,7 +131,7 @@ class IO::CircularBuffer < IO
     end
   end
 
-  private def read_impl(total)
+  private def read_impl(total, &)
     count = 0
 
     loop do
@@ -150,7 +150,7 @@ class IO::CircularBuffer < IO
     end
   end
 
-  private def write_impl(total)
+  private def write_impl(total, &)
     count = total
 
     loop do

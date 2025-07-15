@@ -13,7 +13,7 @@ class EchoHandler
         response.headers["content-length"] = len.to_s
       end
       if type = request.headers["content-type"]?
-          response.headers["content-type"] = type
+        response.headers["content-type"] = type
       end
 
       buffer = Bytes.new(8192)

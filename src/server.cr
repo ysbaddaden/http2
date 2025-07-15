@@ -52,7 +52,7 @@ module HTTP2
         when "HTTP/1.1", "HTTP/1.0"
           headers = HTTP::Headers{
             ":method" => method,
-            ":path" => path,
+            ":path"   => path,
           }
           unless connection.read_headers(headers)
             return bad_request(io)
@@ -98,8 +98,6 @@ module HTTP2
           sleep(100.milliseconds)
         {% end %}
         io.close
-      #rescue ex : Errno
-      #  raise ex unless {Errno::EPIPE, Errno::ECONNRESET}.includes?(ex.errno)
       rescue IO::EOFError | IO::Error
       end
     end

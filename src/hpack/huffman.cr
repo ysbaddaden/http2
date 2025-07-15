@@ -2,7 +2,7 @@ module HTTP2
   module HPACK
     class Huffman
       class Node
-        property left : Node? # bit 0
+        property left : Node?  # bit 0
         property right : Node? # bit 1
         property value : UInt8?
 
@@ -68,7 +68,6 @@ module HTTP2
           eos_padding = true
 
           7.downto(0) do |i|
-
             if byte.bit(i) == 1
               node = node.right
             else

@@ -181,7 +181,7 @@ class IO::CircularBufferTest < Minitest::Test
       count = 0
 
       loop do
-        len = Math.min(rand(1024 .. (16 * 1024)), i.size - count)
+        len = Math.min(rand(1024..(16 * 1024)), i.size - count)
         cb.write(i[count, len])
         break if (count += len) == i.size
       end
@@ -193,7 +193,7 @@ class IO::CircularBufferTest < Minitest::Test
       count = 0
 
       loop do
-        len = Math.min(rand(1 .. 1024), i.size - count)
+        len = Math.min(rand(1..1024), i.size - count)
         read = cb.read(o[count, len])
         break if read == 0
         count += read
