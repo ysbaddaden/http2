@@ -96,7 +96,7 @@ module HTTP1
           end
         else
           @io << name << ": "
-          values.join(", ", @io)
+          values.join(@io, ", ")
           @io << "\r\n"
         end
       end
@@ -113,7 +113,7 @@ module HTTP1
         if bytes.size == 0
           @io << "0\r\n\r\n"
         else
-          bytes.size.to_s(16, @io)
+          bytes.size.to_s(@io, 16)
           @io << "\r\n"
           @io.write(bytes)
           @io << "\r\n"

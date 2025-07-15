@@ -1,6 +1,6 @@
 require "base64"
-require "flate"
-require "gzip"
+require "compress/deflate"
+require "compress/gzip"
 #require "io/hexdump"
 require "openssl"
 require "./connection"
@@ -109,9 +109,9 @@ module HTTP2
 
       case headers["Content-Encoding"]?
       when "gzip"
-        body = Gzip::Reader.new(body, sync_close: true)
+        body = Compress::Gzip::Reader.new(body, sync_close: true)
       when "deflate"
-        body = Flate::Reader.new(body, sync_close: true)
+        body = Compress::Deflate::Reader.new(body, sync_close: true)
       else
         # shut up, crystal
       end

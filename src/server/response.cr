@@ -4,7 +4,7 @@ module HTTP2
     abstract class Output < IO
       include IO::Buffered
 
-      def unbuffered_read(bytes : Bytes)
+      def unbuffered_read(slice : Bytes)
         raise "can't read from HTTP2::Server::Response"
       end
 
@@ -22,7 +22,7 @@ module HTTP2
         @chunked = false
       end
 
-      def unbuffered_write(bytes : Bytes)
+      def unbuffered_write(slice : Bytes)
         unless @sent_headers
           @sent_headers = true
           if @connection.version == "HTTP/1.1" && !@headers.has_key?("content-length")
@@ -31,7 +31,7 @@ module HTTP2
           end
           @connection.send_headers(@headers)
         end
-        @connection.send_data(bytes, @chunked)
+        @connection.send_data(slice, @chunked)
       end
 
       def unbuffered_flush
@@ -71,13 +71,13 @@ module HTTP2
         @sent_headers = false
       end
 
-      def unbuffered_write(bytes : Bytes)
+      def unbuffered_write(slice : Bytes)
         unless @sent_headers
           @sent_headers = true
           @stream.send_headers(@headers)
         end
-        @stream.send_data(bytes)
-        bytes.size
+        @stream.send_data(slice)
+        slice.size
       end
 
       def close
@@ -136,12 +136,12 @@ module HTTP2
         !!@headers["upgrade"]?
       end
 
-      def read(bytes : Bytes)
+      def read(slice : Bytes)
         raise "can't read from HTTP2::Server::Response"
       end
 
-      def write(bytes : Bytes) : Nil
-        @output.write(bytes)
+      def write(slice : Bytes) : Nil
+        @output.write(slice)
       end
 
       def flush
