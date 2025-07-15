@@ -47,5 +47,5 @@ jobs:
 
       - run: curl -L "https://github.com/summerwind/h2spec/releases/download/v2.6.0/h2spec_linux_amd64.tar.gz" | tar zx -C bin
       - run: ./bin/h2spec --version
-      - run: timeout 5m ./bin/h2spec --strict --port 9292 --insecure
+      - run: timeout 5m ./bin/h2spec --strict --port 9292 --tls --insecure
 
