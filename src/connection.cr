@@ -436,13 +436,13 @@ module HTTP2
     private def read_ping_frame(frame)
       raise Error.frame_size_error unless frame.size == PING_FRAME_SIZE
 
-      buffer = uninitialized UInt8[8] # PING_FRAME_SIZE
-      io.read_fully(buffer.to_slice)
+      buffer = Bytes.new(8) # PING_FRAME_SIZE
+      io.read_fully(buffer)
 
       if frame.flags.ack?
         # TODO: validate buffer == previously sent PING value
       else
-        send Frame.new(Frame::Type::PING, frame.stream, ACK, buffer.to_slice)
+        send Frame.new(Frame::Type::PING, frame.stream, ACK, buffer)
       end
     end
 
