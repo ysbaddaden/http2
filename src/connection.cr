@@ -106,14 +106,16 @@ module HTTP2
     def read_client_preface(truncated = false) : Nil
       raise "can't read HTTP/2 client preface on a client connection" unless @type.server?
       if truncated
-        buf1 = uninitialized UInt8[8]; buffer = buf1.to_slice
+        buf1 = uninitialized UInt8[8]
+        buffer = buf1.to_slice
         preface = CLIENT_PREFACE[-8, 8]
       else
-        buf2 = uninitialized UInt8[24]; buffer = buf2.to_slice
+        buf2 = uninitialized UInt8[24]
+        buffer = buf2.to_slice
         preface = CLIENT_PREFACE
       end
-      io.read_fully(buffer.to_slice)
-      unless String.new(buffer.to_slice) == preface
+      io.read_fully(buffer)
+      unless String.new(buffer) == preface
         raise Error.protocol_error("PREFACE expected")
       end
     end
