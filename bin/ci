@@ -3,7 +3,7 @@ set -e
 set -x
 
 # build test server
-shards build
+shards build -Dh2spec
 
 # install h2spec
 wget -O - "https://github.com/summerwind/h2spec/releases/download/v$H2SPEC/h2spec_linux_amd64.tar.gz" | tar zx -C bin
@@ -16,7 +16,7 @@ openssl req -new -key "ssl/server.key" -out "ssl/server.csr" -subj "/C=/ST=/L=/O
 openssl x509 -req -days 365 -in "ssl/server.csr" -signkey "ssl/server.key" -out "ssl/server.crt"
 
 # start HTTP servers
-# PORT=9292 bin/server 2>/dev/null &
+PORT=9292 bin/server 2>/dev/null &
 PORT=9393 TLS=true bin/server 2>/dev/null &
 
 # run unit tests
@@ -26,4 +26,4 @@ crystal run test/*_test.cr test/**/*_test.cr
 bin/h2spec --strict --port 9393 --tls --insecure
 
 # disabled: fails on 6.9.1/2 on CI
-# bin/h2spec --strict --port 9292
+bin/h2spec --strict --port 9292

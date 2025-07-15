@@ -28,7 +28,7 @@ Build and run the `bin/server` server, then launch
 [h2spec](https://github.com/summerwind/h2spec/releases).
 
 ```sh
-$ make bin/server
+$ make bin/server CRFLAGS=-Dh2spec
 ```
 
 Test against HTTP:

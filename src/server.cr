@@ -92,6 +92,11 @@ module HTTP2
       end
     ensure
       begin
+        {% if flag?(:h2spec) %}
+          # FIXME: works around a bug in h2spec where the GOAWAY frame may
+          # sometimes not be read *before* it notices that the IO is closed.
+          sleep(100.milliseconds)
+        {% end %}
         io.close
       #rescue ex : Errno
       #  raise ex unless {Errno::EPIPE, Errno::ECONNRESET}.includes?(ex.errno)
