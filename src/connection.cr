@@ -37,7 +37,7 @@ module HTTP2
     def initialize(@io : IO, @type : Type)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
-      @channel = Channel(Frame | Array(Frame) | Nil).new(10)
+      @channel = Channel(Frame | Array(Frame)).new(10)
       @closed = false
 
       @hpack_encoder = HPACK::Encoder.new(
@@ -69,13 +69,11 @@ module HTTP2
       loop do
         begin
           # OPTIMIZE: follow stream priority to send frames
-          if frame = @channel.receive
+          if frame = @channel.receive?
             begin
               case frame
               when Array
-                frame.each do |f|
-                  write(f, flush: false)
-                end
+                frame.each { |f| write(f, flush: false) }
               else
                 write(frame, flush: false)
               end
@@ -90,8 +88,6 @@ module HTTP2
             io.close unless io.closed?
             break
           end
-        rescue Channel::ClosedError
-          break
         rescue ex
           Log.error(exception: ex) {}
         end
@@ -606,7 +602,6 @@ module HTTP2
       end
 
       unless @channel.closed?
-        @channel.send(nil)
         @channel.close
       end
     end
