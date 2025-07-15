@@ -192,12 +192,14 @@ module HTTP2
         end
       end
     rescue ex : HTTP2::ClientError
-      Log.debug { "RECV: #{ex.code}: #{ex.message}" }
+      # Log.debug { "RECV: #{ex.code}: #{ex.message}" }
     rescue ex : HTTP2::Error
       if connection
         connection.close(error: ex) unless connection.closed?
       end
-      Log.debug { "SENT: #{ex.code}: #{ex.message}" }
+      # Log.debug { "SENT: #{ex.code}: #{ex.message}" }
+    rescue ex : IO::Error | IO::EOFError
+      # silence
     ensure
       if connection
         connection.close unless connection.closed?
@@ -218,8 +220,12 @@ module HTTP2
     private def handle_request(context : Context)
       @handler.not_nil!.call(context)
     ensure
-      context.response.close
-      context.request.close
+      begin
+        context.response.close
+        context.request.close
+      rescue ex : HTTP2::Error | IO::Error | IO::EOFError
+        # silence
+      end
     end
   end
 end
