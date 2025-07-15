@@ -413,7 +413,7 @@ module HTTP2
     end
 
     private def state=(@state)
-      Log.debug { "; Stream is now #{state}" }
+      Log.trace { "; Stream is now #{state}" }
     end
 
     # :nodoc:

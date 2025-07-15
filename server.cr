@@ -50,7 +50,7 @@ if ENV["TLS"]?
 end
 
 unless ENV["CI"]?
-  HTTP2::Log.level = Log::Severity::Debug
+  HTTP2::Log.level = Log::Severity::Trace
 end
 
 host = ENV["HOST"]? || "::"

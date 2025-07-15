@@ -153,7 +153,7 @@ module HTTP2
       if settings
         # HTTP/1 => HTTP/2 upgrade: we got settings
         connection.remote_settings.parse(settings) do |setting, value|
-          Log.debug { "  #{setting}=#{value}" }
+          Log.trace { "  #{setting}=#{value}" }
         end
       end
 
@@ -192,12 +192,12 @@ module HTTP2
         end
       end
     rescue ex : HTTP2::ClientError
-      # Log.debug { "RECV: #{ex.code}: #{ex.message}" }
+      # Log.trace { "RECV: #{ex.code}: #{ex.message}" }
     rescue ex : HTTP2::Error
       if connection
         connection.close(error: ex) unless connection.closed?
       end
-      # Log.debug { "SENT: #{ex.code}: #{ex.message}" }
+      # Log.trace { "SENT: #{ex.code}: #{ex.message}" }
     rescue ex : IO::Error | IO::EOFError
       # silence
     ensure
