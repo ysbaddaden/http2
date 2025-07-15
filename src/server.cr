@@ -92,7 +92,8 @@ module HTTP2
             return bad_request(io)
           end
         else
-          return bad_request(io)
+          # protocol error: close the connection
+          return
         end
       end
     ensure
