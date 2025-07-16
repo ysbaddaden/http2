@@ -26,6 +26,7 @@ class HTTP::Server
   def initialize(@handler : HTTP::Handler | HTTP::Handler::HandlerProc)
   end
 
+  {% begin %}
   private def handle_client(io : IO)
     if io.is_a?(IO::Buffered)
       io.sync = false
@@ -53,39 +54,36 @@ class HTTP::Server
 
     connection = HTTP::Connection.new(io)
 
-    {% begin %}
-    begin
-      return unless request_line = connection.read_request_line
-      method, path = request_line
+    return unless request_line = connection.read_request_line
+    method, path = request_line
 
-      case connection.version
-      when "HTTP/1.1", "HTTP/1.0"
-        handle_http1_connection(connection, scheme, method, path)
-      when "HTTP/2.0"
-        if method == "PRI" && path == "*"
-          handle_http2_connection(io)
-        else
-          bad_request(io)
-        end
+    case connection.version
+    when "HTTP/1.1", "HTTP/1.0"
+      handle_http1_connection(connection, scheme, method, path)
+    when "HTTP/2.0"
+      if method == "PRI" && path == "*"
+        handle_http2_connection(io)
       else
-        # protocol error: merely close the connection
+        bad_request(io)
       end
-    rescue IO::EOFError | IO::Error {% unless flag?(:without_openssl) %} | OpenSSL::SSL::Error {% end %}
-      # silence
-    ensure
-      begin
-        {% if flag?(:h2spec) %}
-          # FIXME: works around a bug in h2spec where the GOAWAY frame may
-          # sometimes not be read *before* it notices that the IO is closed.
-          sleep(100.milliseconds)
-        {% end %}
-        io.close
-      rescue IO::EOFError | IO::Error {% unless flag?(:without_openssl) %} | OpenSSL::SSL::Error {% end %}
-        # silence
-      end
+    else
+      # protocol error: merely close the connection
     end
-    {% end %}
+  rescue ex : IO::Error {% unless flag?(:without_openssl) %} | OpenSSL::SSL::Error {% end %}
+    # silence
+  ensure
+    begin
+      {% if flag?(:h2spec) %}
+        # FIXME: works around a bug in h2spec where the GOAWAY frame may
+        # sometimes not be read *before* it notices that the IO is closed.
+        sleep(100.milliseconds)
+      {% end %}
+      io.close
+    rescue ex : IO::Error {% unless flag?(:without_openssl) %} | OpenSSL::SSL::Error {% end %}
+      # silence
+    end
   end
+  {% end %}
 
   private def handle_http1_connection(connection, scheme, method, path)
     loop do
@@ -179,7 +177,7 @@ class HTTP::Server
     if connection
       connection.close(error: ex) unless connection.closed?
     end
-  rescue ex : HTTP::Server::ClientError | IO::Error | IO::EOFError
+  rescue ex : HTTP::Server::ClientError | IO::Error
     # silence
   ensure
     if connection
@@ -202,8 +200,7 @@ class HTTP::Server
   ensure
     begin
       context.response.close
-      # context.request.close
-    rescue ex : HTTP2::Error | IO::Error | IO::EOFError
+    rescue ex : HTTP2::Error | IO::Error
       # silence
     end
   end
