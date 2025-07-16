@@ -5,6 +5,7 @@ CRYSTAL = crystal
 CRFLAGS =
 
 bin/%: samples/%.cr src/*.cr src/**/*.cr
+	@mkdir -p bin
 	$(CRYSTAL) build $(CRFLAGS) -o $@ $<
 
 ssl: .PHONY
