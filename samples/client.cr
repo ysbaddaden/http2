@@ -51,8 +51,6 @@ module HTTP2
           # TODO: got SERVER PUSHed headers
         when Frame::Type::GOAWAY
           break
-        else
-          # shut up, crystal
         end
       end
     end

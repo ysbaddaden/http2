@@ -368,8 +368,6 @@ module HTTP2
         #   case frame.type
         #   when Frame::Type::HEADERS, Frame::Type::CONTINUATION, Frame::Type::DATA
         #     raise Error.stream_closed("STREAM #{id} is #{state}")
-        #   else
-        #     # shut up, crystal
         #   end
         # end
         if frame.flags.end_stream? || frame.type == Frame::Type::RST_STREAM
@@ -381,8 +379,6 @@ module HTTP2
           case frame.type
           when Frame::Type::HEADERS, Frame::Type::CONTINUATION, Frame::Type::DATA
             raise Error.stream_closed("STREAM #{id} is #{state}")
-          else
-            # shut up, crystal
           end
         end
         if frame.flags.end_stream? || frame.type == Frame::Type::RST_STREAM

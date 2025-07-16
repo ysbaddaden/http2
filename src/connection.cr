@@ -389,8 +389,6 @@ module HTTP2
               stream.increment_outbound_window_size(difference)
             end
           end
-        else
-          # shut up, crystal
         end
       end
 
