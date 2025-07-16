@@ -4,12 +4,6 @@
 CRYSTAL = crystal
 CRFLAGS =
 
-bin/h: h.cr src/*.cr src/**/*.cr
-	$(CRYSTAL) build $(CRFLAGS) -o bin/h h.cr
-
-bin/h2: h2.cr src/*.cr src/**/*.cr
-	$(CRYSTAL) build $(CRFLAGS) -o bin/h2 h2.cr
-
 bin/server: server.cr src/*.cr src/**/*.cr
 	$(CRYSTAL) build $(CRFLAGS) -o bin/server server.cr
 
