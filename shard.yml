@@ -14,6 +14,6 @@ development_dependencies:
 
 targets:
   server:
-    main: server.cr
+    main: samples/server.cr
 
 license: Apache-2.0

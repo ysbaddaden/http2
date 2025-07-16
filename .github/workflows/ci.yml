@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: crystal-lang/install-crystal@v1
 
-      - run: shards build -Dh2spec
+      - run: make bin/server CRFLAGS=-Dh2spec
       - run: ./bin/server &
 
       - run: wget -O - "https://github.com/summerwind/h2spec/releases/download/v2.6.0/h2spec_linux_amd64.tar.gz" | tar zx -C bin
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: crystal-lang/install-crystal@v1
 
-      - run: shards build -Dh2spec
+      - run: make bin/server CRFLAGS=-Dh2spec
       - run: make ssl
       - run: TLS=1 ./bin/server &
 
