@@ -1,6 +1,6 @@
 require "socket"
 require "openssl"
-require "./src/connection"
+require "../src/connection"
 
 module HTTP2
   class Client
@@ -84,7 +84,7 @@ module HTTP2
   end
 end
 
-Log.for("http2").level = Log::Severity::Debug
+Log.for("http2").level = Log::Severity::Trace
 
 client = HTTP2::Client.new("localhost", 9292, !!ENV["TLS"]?)
 

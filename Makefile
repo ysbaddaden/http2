@@ -4,17 +4,8 @@
 CRYSTAL = crystal
 CRFLAGS =
 
-bin/server: server.cr src/*.cr src/**/*.cr
-	$(CRYSTAL) build $(CRFLAGS) -o bin/server server.cr
-
-bin/client: client.cr src/*.cr src/**/*.cr
-	$(CRYSTAL) build $(CRFLAGS) -o bin/client client.cr
-
-run: bin/server
-	./bin/server
-
-run_client: bin/client
-	./bin/client
+bin/%: samples/%.cr src/*.cr src/**/*.cr
+	$(CRYSTAL) build $(CRFLAGS) -o $@ $<
 
 ssl: .PHONY
 	@mkdir -p ssl

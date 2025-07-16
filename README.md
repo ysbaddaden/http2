@@ -59,7 +59,7 @@ $ ./h2spec -p 9292 -S
 
 Test against HTTPS:
 ```sh
-$ TLS=true bin/server
+$ TLS=1 bin/server
 $ ./h2spec -p 9292 -k -t -S
 ```
 

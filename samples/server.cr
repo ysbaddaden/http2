@@ -1,5 +1,5 @@
 require "openssl"
-require "./src/server"
+require "../src/server"
 
 class EchoHandler
   include HTTP::Handler
