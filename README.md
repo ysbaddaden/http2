@@ -1,30 +1,34 @@
-# HTTP
+# HTTP/2
 
-A pure Crystal (but incomplete) implementation of the HTTP/2 protocol.
+Pure Crystal implementation of the HTTP/2 protocol.
 
-Requires OpenSSL 1.1 or above to support ALPN protocol negotiation, which is
-required for HTTP/2 over secure connections.
-
-## TODO
+## Status
 
 - [x] HPACK (including DH compression)
 - [x] HTTP/2 connection, streams, frames, ...
 - [x] HTTP/2 flow control (in/out, whole-connection, per-stream)
 - [ ] HTTP/2 priority
-- [x] support HTTP/2 server connections
-- [x] ~~integrate transparently into `HTTP::Server`~~ (broken)
-- [ ] ~~integrate into `HTTP::Server::Context` (http version, server-push)~~
-- [x] support HTTP/2 client connections
-- [ ] ~~integrate into `HTTP::Client`~~
+- [x] HTTP/2 server connections
+- [x] HTTP/1 to HTTP/2 server connection upgrades
+- [ ] Integrate into `HTTP::Server` (WIP in #16)
+- [x] HTTP/2 client connections
+- [ ] Integrate into `HTTP::Client` (?)
+- [x] Passes h2spec 2.6.0 💚
 
-- [x] HPACK tests (HTTP/2 protocol, ...)
-- [ ] HTTP/2 server unit tests (HTTP/2 protocol, ...)
-- [ ] HTTP/2 client unit tests (HTTP/2 protocol, ...)
-- [x] h2spec
+Eventually, adding HTTP/2 support to your HTTP servers written in
+Crystal, if they're built on top of `HTTP::Server` or a framework
+using `HTTP::Server` internally, shouldn't be more complex than
+adding the `http2` shard, and requiring one file:
+
+```crystal
+require "http2/server"
+```
+
+Only available in #16 for now.
 
 ## Tests
 
-Build and run the `bin/server` server, then launch
+Build and run the `bin/server` server, then execute
 [h2spec](https://github.com/summerwind/h2spec/releases).
 
 ```sh
