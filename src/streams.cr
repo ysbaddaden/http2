@@ -5,7 +5,7 @@ module HTTP2
     # :nodoc:
     protected def initialize(@connection : Connection, type : Connection::Type)
       @streams = {} of Int32 => Stream
-      @mutex = Mutex.new
+      @mutex = Mutex.new  # OPTIMIZE: use Sync::RWLock instead
       @highest_remote_id = 0
 
       if type.server?
@@ -21,11 +21,11 @@ module HTTP2
     # stream, unless `consume` is set to false, for example a PRIORITY frame
     # forward declares a stream priority/dependency but doesn't consume the
     # stream identifiers, so they are still valid.
-    def find(id : Int32, consume : Bool = true)
+    def find(id : Int32, consume : Bool = true) : Stream
       @mutex.synchronize do
         @streams[id] ||= begin
           if max = @connection.local_settings.max_concurrent_streams
-            if active_count(1) >= max
+            if unsafe_active_count(1) >= max
               raise Error.refused_stream("MAXIMUM capacity reached")
             end
           end
@@ -45,20 +45,20 @@ module HTTP2
 
     # Returns true if the incoming stream id is valid for the current connection.
     protected def valid?(id : Int32)
-      id == 0 || (                   # stream #0 is always valid
-        (id % 2) == 1 && (           # incoming streams are odd-numbered
-          @streams[id]? ||           # streams already exists
-          id >= @highest_remote_id   # stream ids must grow (not shrink)
+      id == 0 || (                                 # stream #0 is always valid
+        (id % 2) == 1 && (                         # incoming streams are odd-numbered
+          @mutex.synchronize { @streams[id]? } ||  # streams already exists
+          id >= @highest_remote_id                 # stream ids must grow (not shrink)
         )
       )
     end
 
     # Creates an outgoing stream. For example to handle a client request or a
     # server push.
-    def create(state = Stream::State::IDLE)
+    def create(state = Stream::State::IDLE) : Stream
       @mutex.synchronize do
         if max = @connection.remote_settings.max_concurrent_streams
-          if active_count(0) >= max
+          if unsafe_active_count(0) >= max
             raise Error.internal_error("MAXIMUM outgoing stream capacity reached")
           end
         end
@@ -68,8 +68,12 @@ module HTTP2
       end
     end
 
-    # Counts active ingoing (type=1) or outgoing (type=0) streams.
-    protected def active_count(type)
+    # Counts active ingnoring (type=1) or outgoing (type=0) streams.
+    protected def active_count(type) : Int32
+      @mutex.synchronize { active_count(type) }
+    end
+
+    private def unsafe_active_count(type) : Int32
       @streams.reduce(0) do |count, (_, stream)|
         if stream.id == 0 || stream.id % 2 == type && stream.active?
           count + 1
@@ -79,13 +83,9 @@ module HTTP2
       end
     end
 
-    protected def last_stream_id
+    protected def last_stream_id : Int32
       @mutex.synchronize do
-        if @streams.any?
-          @streams.keys.max
-        else
-          0
-        end
+        @streams.reduce(0) { |a, (k, _)| a > k ? a : k }
       end
     end
   end

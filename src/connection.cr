@@ -34,6 +34,7 @@ module HTTP2
     protected getter hpack_encoder : HPACK::Encoder
     protected getter hpack_decoder : HPACK::Decoder
     private getter io : IO
+    getter streams : Streams
 
     def initialize(@io : IO, @type : Type)
       @local_settings = DEFAULT_SETTINGS.dup
@@ -52,15 +53,12 @@ module HTTP2
 
       @inbound_window_size = DEFAULT_INITIAL_WINDOW_SIZE
       @outbound_window_size = Atomic(Int32).new(DEFAULT_INITIAL_WINDOW_SIZE)
-    end
 
-    # Holds streams associated to the connection. Can be used to find an
-    # existing stream or create a new stream —odd numbered for client requests,
-    # even numbered for server pushed requests.
-    def streams : Streams
-      # FIXME: thread safety?
-      #        can't be in #initialize because of self reference
-      @streams ||= Streams.new(self, @type)
+      # Holds @streams associated to the connection. Can be used to find an
+      # existing stream or create a new stream —odd numbered for client requests,
+      # even numbered for server pushed requests.
+      @streams = uninitialized Streams
+      @streams = Streams.new(self, @type)
     end
 
     # Reads the expected `HTTP2::CLIENT_PREFACE` for a server context.
