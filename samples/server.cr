@@ -58,8 +58,8 @@ server = HTTP::Server.new([
 
 if ENV["TLS"]?
   ssl_context = OpenSSL::SSL::Context::Server.new
-  ssl_context.certificate_chain = File.join(__DIR__, "ssl", "server.crt")
-  ssl_context.private_key = File.join(__DIR__, "ssl", "server.key")
+  ssl_context.certificate_chain = File.join("ssl", "server.crt")
+  ssl_context.private_key = File.join("ssl", "server.key")
   server.bind_tls(host, port, ssl_context)
 else
   server.bind_tcp(host, port)
