@@ -1,9 +1,10 @@
+require "openssl"
 require "./src/server"
 
 class EchoHandler
-  include HTTP2::Server::Handler
+  include HTTP::Handler
 
-  def call(context : HTTP2::Server::Context)
+  def call(context : HTTP::Server::Context)
     request, response = context.request, context.response
 
     if request.method == "PUT" && request.path == "/echo"
@@ -19,7 +20,7 @@ class EchoHandler
       buffer = Bytes.new(8192)
 
       loop do
-        count = request.body.read(buffer)
+        count = request.body.try(&.read(buffer)) || 0
         break if count == 0
         response.write(buffer[0, count])
       end
@@ -32,21 +33,15 @@ class EchoHandler
 end
 
 class NotFoundHandler
-  include HTTP2::Server::Handler
+  include HTTP::Handler
 
-  def call(context : HTTP2::Server::Context)
+  def call(context : HTTP::Server::Context)
     response = context.response
-    response.status = 404
+    response.status_code = 404
     response.headers["server"] = "h2/0.0.0"
     response.headers["content-type"] = "text/plain"
     response << "404 NOT FOUND\n"
   end
-end
-
-if ENV["TLS"]?
-  ssl_context = OpenSSL::SSL::Context::Server.new
-  ssl_context.certificate_chain = File.join(__DIR__, "ssl", "server.crt")
-  ssl_context.private_key = File.join(__DIR__, "ssl", "server.key")
 end
 
 unless ENV["CI"]?
@@ -56,15 +51,24 @@ end
 host = ENV["HOST"]? || "::"
 port = (ENV["PORT"]? || 9292).to_i
 
-handlers = [
+server = HTTP::Server.new([
   EchoHandler.new,
   NotFoundHandler.new,
-]
-server = HTTP2::Server.new(host, port, ssl_context)
+])
+
+if ENV["TLS"]?
+  ssl_context = OpenSSL::SSL::Context::Server.new
+  ssl_context.certificate_chain = File.join(__DIR__, "ssl", "server.crt")
+  ssl_context.private_key = File.join(__DIR__, "ssl", "server.key")
+  server.bind_tls(host, port, ssl_context)
+else
+  server.bind_tcp(host, port)
+end
 
 if ssl_context
   puts "listening on https://#{host}:#{port}/"
 else
   puts "listening on http://#{host}:#{port}/"
 end
-server.listen(handlers)
+
+server.listen

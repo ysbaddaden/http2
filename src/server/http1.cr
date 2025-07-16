@@ -1,12 +1,14 @@
 require "http/common"
 require "http/content"
 
-module HTTP1
+module HTTP
   struct Connection
     MAX_HEADERS_SIZE = 16_384
 
+    # TODO: MAX_REQUEST_LINE_SIZE
+
     getter io : IO
-    getter! version : String
+    property! version : String
 
     def initialize(@io)
     end
@@ -62,7 +64,7 @@ module HTTP1
       true
     end
 
-    def upgrade(protocol : String)
+    def http2_upgrade(protocol : String)
       @io << @version << " 101 Switching Protocols\r\n"
       @io << "Connection: Upgrade\r\n"
       @io << "Upgrade: " << protocol << "\r\n"
@@ -71,19 +73,24 @@ module HTTP1
     end
 
     def content(headers : HTTP::Headers, mandatory = false) : IO?
-      if content_length = headers["Content-Length"]?.try(&.to_u64)
-        return if content_length == 0
-        HTTP::FixedLengthContent.new(@io, content_length)
+      if content_length = HTTP.content_length(headers)
+        body = HTTP::FixedLengthContent.new(@io, content_length)
       elsif headers["Transfer-Encoding"]? == "chunked"
-        HTTP::ChunkedContent.new(@io)
+        body = HTTP::ChunkedContent.new(@io)
       elsif mandatory
-        HTTP::UnknownLengthContent.new(@io)
+        body = HTTP::UnknownLengthContent.new(@io)
       end
+
+      if body.is_a?(HTTP::Content) && HTTP.expect_continue?(headers)
+        body.expects_continue = true
+      end
+
+      body
     end
 
-    def send_headers(headers : HTTP::Headers)
+    def send_headers(headers : HTTP::Headers, message : String? = nil)
       status = headers[":status"]
-      message = HTTP::Status.new(status.to_i).description
+      message ||= HTTP::Status.new(status.to_i).description
       @io << @version << ' ' << status << ' ' << message << "\r\n"
 
       headers.each do |name, values|
