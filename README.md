@@ -10,21 +10,37 @@ Pure Crystal implementation of the HTTP/2 protocol.
 - [ ] HTTP/2 priority
 - [x] HTTP/2 server connections
 - [x] HTTP/1 to HTTP/2 server connection upgrades
-- [ ] Integrate into `HTTP::Server` (WIP in #16)
+- [x] Integrate into `HTTP::Server`
 - [x] HTTP/2 client connections
-- [ ] Integrate into `HTTP::Client` (?)
+- [ ] Integrate into `HTTP::Client`
 - [x] Passes h2spec 2.6.0 💚
 
-Eventually, adding HTTP/2 support to your HTTP servers written in
-Crystal, if they're built on top of `HTTP::Server` or a framework
-using `HTTP::Server` internally, shouldn't be more complex than
-adding the `http2` shard, and requiring one file:
+To add HTTP/2 support to your HTTP servers written in Crystal, if they're built
+on top of `HTTP::Server` or a framework using `HTTP::Server` internally, add the
+`http2` shard to your `shard.yml`, then require one file:
 
 ```crystal
 require "http2/server"
 ```
 
-Only available in #16 for now.
+That's it. Now every `HTTP::Server` instance is HTTP/2 compliant! ✨
+
+Well, that's enough for `curl` and other CLI tools, because the HTTP/2 RFC
+allows unencrypted HTTP/2 connections, and has multiple ways to upgrade a
+HTTP/1 connection into a HTTP/2 connection, but the big browsers (Firefox,
+Chrome, Safari) all require a TLS connection... even on localhost. You must
+prepare a TLS certificate, instantiate an `OpenSSL::SSL::Context::Server` and
+call `HTTP::Server#bind_tls`.
+
+```crystal
+context = OpenSSL::SSL::Context::Server.new
+context.certificate_chain = File.join(TLS_PATH, "crt.pem")
+context.private_key = File.join(TLS_PATH, "key.pem")
+
+server = HTTP::Server.new(handlers)
+server.bind_tls(host, port, context)
+server.listen
+```
 
 ## Tests
 
