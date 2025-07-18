@@ -234,7 +234,7 @@ module HTTP2
 
         begin
           if stream.data?
-            hpack_decoder.decode(buffer, stream.trailing_headers)
+            hpack_decoder.decode(buffer, stream.trailers)
           else
             hpack_decoder.decode(buffer, stream.headers)
             if @type.server?

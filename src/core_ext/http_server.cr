@@ -3,6 +3,7 @@ require "compress/deflate"
 require "compress/gzip"
 require "http/server"
 require "./http_request"
+require "./http_server_context"
 require "./http_server_response"
 require "../connection"
 require "../server/http1"
@@ -164,7 +165,7 @@ class HTTP::Server
       case frame.type
       when HTTP2::Frame::Type::HEADERS
         # don't dispatch twice
-        next if frame.stream.trailing_headers?
+        next if frame.stream.trailers?
         context = context_for(frame.stream)
         spawn handle_request(context.as(Context))
       when HTTP2::Frame::Type::PUSH_PROMISE
@@ -192,7 +193,7 @@ class HTTP::Server
       request = HTTP::Request.new(headers, body, "HTTP/2.0")
     end
     response = HTTP::Server::Response.new(stream)
-    HTTP::Server::Context.new(request, response)
+    HTTP::Server::Context.new(request, response, stream)
   end
 
   private def handle_request(context : Context)

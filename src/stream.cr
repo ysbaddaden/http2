@@ -95,13 +95,13 @@ module HTTP2
       @headers ||= HTTP::Headers.new
     end
 
-    # Received trailing headers, or `nil` if none have been received (yet).
-    def trailing_headers? : HTTP::Headers?
-      @trailing_headers
+    # Received trailing HTTP headers, or `nil` if none have been received (yet).
+    def trailers? : HTTP::Headers?
+      @trailers
     end
 
-    protected def trailing_headers : HTTP::Headers
-      @trailing_headers ||= HTTP::Headers.new
+    protected def trailers : HTTP::Headers
+      @trailers ||= HTTP::Headers.new
     end
 
     def ==(other : Stream)
