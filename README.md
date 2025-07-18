@@ -66,16 +66,17 @@ $ ./h2spec -p 9292 -k -t -S
 
 ### HTTP/2
 
-- rfc7540 HTTP/2
-- rfc7541 HPACK Header Compression for HTTP/2
+- [RFC 9113](https://datatracker.ietf.org/doc/html/rfc9113) HTTP/2
+- [RFC 7540](https://datatracker.ietf.org/doc/html/rfc7540) HTTP/2 (obsolete)
+- [RFC 7541](https://datatracker.ietf.org/doc/html/rfc7541) HPACK Header Compression for HTTP/2
 
 ### HTTP/1
 
-- rfc1945 HTTP/1.0 (informational)
-- rfc2616 HTTP/1.1 (obsolete)
-- rfc7230 HTTP/1.1 Message Syntax and Routing
-- rfc7231 HTTP/1.1 Semantics and Content
-- rfc7232 HTTP/1.1 Conditional Requests
-- rfc7233 HTTP/1.1 Range Requests
-- rfc7234 HTTP/1.1 Caching
-- rfc7235 HTTP/1.1 Authentification
+- [RFC 1945](https://datatracker.ietf.org/doc/html/rfc1945) HTTP/1.0 (informational)
+- [RFC 2616](https://datatracker.ietf.org/doc/html/rfc2616) HTTP/1.1 (obsolete)
+- [RFC 7230](https://datatracker.ietf.org/doc/html/rfc7230) HTTP/1.1 Message Syntax and Routing
+- [RFC 7231](https://datatracker.ietf.org/doc/html/rfc7231) HTTP/1.1 Semantics and Content
+- [RFC 7232](https://datatracker.ietf.org/doc/html/rfc7232) HTTP/1.1 Conditional Requests
+- [RFC 7233](https://datatracker.ietf.org/doc/html/rfc7233) HTTP/1.1 Range Requests
+- [RFC 7234](https://datatracker.ietf.org/doc/html/rfc7234) HTTP/1.1 Caching
+- [RFC 7235](https://datatracker.ietf.org/doc/html/rfc7235) HTTP/1.1 Authentification
