@@ -62,21 +62,30 @@ $ TLS=1 bin/server
 $ ./h2spec -p 9292 -k -t -S
 ```
 
+NOTE: h2spec hasn't been updated since 2020 while a revised version
+of the HTTP/2 RFC was released in 2022 (RFC 9113).
+
 ## RFC
 
 ### HTTP/2
 
-- [RFC 9113](https://datatracker.ietf.org/doc/html/rfc9113) HTTP/2
 - [RFC 7540](https://datatracker.ietf.org/doc/html/rfc7540) HTTP/2 (obsolete)
 - [RFC 7541](https://datatracker.ietf.org/doc/html/rfc7541) HPACK Header Compression for HTTP/2
+- [RFC 9113](https://datatracker.ietf.org/doc/html/rfc9113) HTTP/2
 
 ### HTTP/1
 
 - [RFC 1945](https://datatracker.ietf.org/doc/html/rfc1945) HTTP/1.0 (informational)
 - [RFC 2616](https://datatracker.ietf.org/doc/html/rfc2616) HTTP/1.1 (obsolete)
-- [RFC 7230](https://datatracker.ietf.org/doc/html/rfc7230) HTTP/1.1 Message Syntax and Routing
-- [RFC 7231](https://datatracker.ietf.org/doc/html/rfc7231) HTTP/1.1 Semantics and Content
-- [RFC 7232](https://datatracker.ietf.org/doc/html/rfc7232) HTTP/1.1 Conditional Requests
-- [RFC 7233](https://datatracker.ietf.org/doc/html/rfc7233) HTTP/1.1 Range Requests
-- [RFC 7234](https://datatracker.ietf.org/doc/html/rfc7234) HTTP/1.1 Caching
-- [RFC 7235](https://datatracker.ietf.org/doc/html/rfc7235) HTTP/1.1 Authentification
+- [RFC 7230](https://datatracker.ietf.org/doc/html/rfc7230) HTTP/1.1 Message Syntax and Routing (obsolete)
+- [RFC 7231](https://datatracker.ietf.org/doc/html/rfc7231) HTTP/1.1 Semantics and Content (obsolete)
+- [RFC 7232](https://datatracker.ietf.org/doc/html/rfc7232) HTTP/1.1 Conditional Requests (obsolete)
+- [RFC 7233](https://datatracker.ietf.org/doc/html/rfc7233) HTTP/1.1 Range Requests (obsolete)
+- [RFC 7234](https://datatracker.ietf.org/doc/html/rfc7234) HTTP/1.1 Caching (obsolete)
+- [RFC 7235](https://datatracker.ietf.org/doc/html/rfc7235) HTTP/1.1 Authentification (obsolete)
+- [RFC 9112](https://datatracker.ietf.org/doc/html/rfc9112) HTTP/1.1
+
+### HTTP
+
+- [RFC 9110](https://datatracker.ietf.org/doc/html/rfc9110) HTTP semantics
+- [RFC 9111](https://datatracker.ietf.org/doc/html/rfc9111) HTTP Caching
