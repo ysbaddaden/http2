@@ -7,7 +7,6 @@ Pure Crystal implementation of the HTTP/2 protocol.
 - [x] HPACK (including DH compression)
 - [x] HTTP/2 connection, streams, frames, ...
 - [x] HTTP/2 flow control (in/out, whole-connection, per-stream)
-- [ ] HTTP/2 priority
 - [x] HTTP/2 server connections
 - [x] HTTP/1 to HTTP/2 server connection upgrades
 - [x] Integrate into `HTTP::Server`
