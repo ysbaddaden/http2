@@ -177,6 +177,7 @@ class HTTP::Server
     # :nodoc:
     def initialize(connection : HTTP::Connection)
       @headers = HTTP::Headers.new
+      @headers[":status"] ||= "200"
       @version = connection.version
       output = HTTP::Output.new(connection, @headers)
       @original_output = output
@@ -186,6 +187,7 @@ class HTTP::Server
     # :nodoc:
     def initialize(stream : HTTP2::Stream)
       @headers = HTTP::Headers.new
+      @headers[":status"] ||= "200"
       @version = "HTTP/2.0"
       output = HTTP2::Output.new(stream, @headers)
       @original_output = output
