@@ -13,14 +13,6 @@ module HTTP2
       MAX_HEADER_LIST_SIZE   = 0x6
     end
 
-    setter header_table_size : UInt32
-    setter enable_push : Bool
-    setter max_concurrent_streams : UInt32
-    getter max_concurrent_streams : UInt32?
-    setter initial_window_size : UInt32
-    setter max_header_list_size : UInt32
-    getter max_header_list_size : UInt32?
-
     @header_table_size : UInt32?
     @enable_push : Bool?
     @max_concurrent_streams : UInt32?
@@ -43,8 +35,24 @@ module HTTP2
       (@header_table_size || DEFAULT_HEADER_TABLE_SIZE).to_i32
     end
 
+    def header_table_size=(value : Int)
+      @header_table_size = value.to_u32
+    end
+
     def enable_push : Bool
       @enable_push || DEFAULT_ENABLE_PUSH
+    end
+
+    def enable_push=(value : Bool)
+      @enable_push = value
+    end
+
+    def max_concurrent_streams : UInt32?
+      @max_concurrent_streams
+    end
+
+    def max_concurrent_streams=(value : Int)
+      @max_concurrent_streams = value.to_u32
     end
 
     def initial_window_size : Int32
@@ -65,6 +73,14 @@ module HTTP2
         raise Error.protocol_error("INVALID frame size: #{size}")
       end
       @max_frame_size = size.to_u32
+    end
+
+    def max_header_list_size : Int32?
+      @max_header_list_size.try(&.to_i32)
+    end
+
+    def max_header_list_size=(value : Int)
+      @max_header_list_size = value.to_u32
     end
 
     def parse(bytes : Bytes, &) : Nil

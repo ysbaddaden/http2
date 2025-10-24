@@ -376,10 +376,10 @@ module HTTP2
 
         case id
         when Settings::Identifier::HEADER_TABLE_SIZE
-          hpack_decoder.max_table_size = value
+          hpack_decoder.max_table_size = value.to_i32
 
         when Settings::Identifier::INITIAL_WINDOW_SIZE
-          difference = value - remote_settings.initial_window_size
+          difference = value.to_i32 - remote_settings.initial_window_size
 
           # adjust windows size for all control-flow streams (doesn't affect
           # the connection window size):
