@@ -13,20 +13,20 @@ module HTTP2
       MAX_HEADER_LIST_SIZE   = 0x6
     end
 
-    setter header_table_size : Int32
+    setter header_table_size : UInt32
     setter enable_push : Bool
-    setter max_concurrent_streams : Int32
-    getter max_concurrent_streams : Int32?
-    setter initial_window_size : Int32
-    setter max_header_list_size : Int32
-    getter max_header_list_size : Int32?
+    setter max_concurrent_streams : UInt32
+    getter max_concurrent_streams : UInt32?
+    setter initial_window_size : UInt32
+    setter max_header_list_size : UInt32
+    getter max_header_list_size : UInt32?
 
-    @header_table_size : Int32?
+    @header_table_size : UInt32?
     @enable_push : Bool?
-    @max_concurrent_streams : Int32?
-    @initial_window_size : Int32?
-    @max_frame_size : Int32?
-    @max_header_list_size : Int32?
+    @max_concurrent_streams : UInt32?
+    @initial_window_size : UInt32?
+    @max_frame_size : UInt32?
+    @max_header_list_size : UInt32?
 
     # :nodoc:
     protected def initialize(
@@ -40,7 +40,7 @@ module HTTP2
     end
 
     def header_table_size : Int32
-      @header_table_size || DEFAULT_HEADER_TABLE_SIZE
+      (@header_table_size || DEFAULT_HEADER_TABLE_SIZE).to_i32
     end
 
     def enable_push : Bool
@@ -48,23 +48,23 @@ module HTTP2
     end
 
     def initial_window_size : Int32
-      @initial_window_size || DEFAULT_INITIAL_WINDOW_SIZE
+      (@initial_window_size || DEFAULT_INITIAL_WINDOW_SIZE).to_i32
     end
 
-    def initial_window_size=(size : Int32)
+    def initial_window_size=(size : Int)
       raise Error.flow_control_error unless 0 <= size < MAXIMUM_WINDOW_SIZE
-      @initial_window_size = size
+      @initial_window_size = size.to_u32
     end
 
     def max_frame_size : Int32
-      @max_frame_size || DEFAULT_MAX_FRAME_SIZE
+      (@max_frame_size || DEFAULT_MAX_FRAME_SIZE).to_i32
     end
 
-    def max_frame_size=(size : Int32)
+    def max_frame_size=(size : Int)
       unless MINIMUM_FRAME_SIZE <= size < MAXIMUM_FRAME_SIZE
         raise Error.protocol_error("INVALID frame size: #{size}")
       end
-      @max_frame_size = size
+      @max_frame_size = size.to_u32
     end
 
     def parse(bytes : Bytes, &) : Nil
@@ -76,7 +76,7 @@ module HTTP2
     def parse(io : IO, size : Int32, &) : Nil
       size.times do |i|
         id = Identifier.from_value?(io.read_bytes(UInt16, IO::ByteFormat::BigEndian))
-        value = io.read_bytes(UInt32, IO::ByteFormat::BigEndian).to_i32
+        value = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
         next unless id # unknown setting identifier
 
         yield id, value
@@ -108,7 +108,7 @@ module HTTP2
           if value.is_a?(Bool)
             io.write_bytes(value ? 1_u32 : 0_u32, IO::ByteFormat::BigEndian)
           else
-            io.write_bytes(value.to_u32, IO::ByteFormat::BigEndian)
+            io.write_bytes(value, IO::ByteFormat::BigEndian)
           end
         end
       {% end %}
