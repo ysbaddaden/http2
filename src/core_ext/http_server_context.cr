@@ -7,7 +7,7 @@ class HTTP::Server
     end
 
     def trailers : Headers?
-      @stream.try(&.trailers)
+      @stream.try(&.trailers?)
     end
   end
 end
