@@ -70,7 +70,7 @@ module HTTP2
 
     # Counts active ingnoring (type=1) or outgoing (type=0) streams.
     protected def active_count(type) : Int32
-      @mutex.synchronize { active_count(type) }
+      @mutex.synchronize { unsafe_active_count(type) }
     end
 
     private def unsafe_active_count(type) : Int32
