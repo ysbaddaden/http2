@@ -20,7 +20,7 @@ module AsyncTest
       Fiber.yield
       break if @done
 
-      if timeout && Time.instant - started_at >= timeout
+      if timeout && started_at.elapsed >= timeout
         flunk "async block did not finish within #{timeout}"
       end
     end
