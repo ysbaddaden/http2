@@ -513,7 +513,7 @@ module HTTP2
 
       # if @inbound_window_size <= 0
       if @inbound_window_size < (initial_window_size // 2)
-        increment = Math.min(initial_window_size * streams.active_count(1), MAXIMUM_WINDOW_SIZE)
+        increment = Math.min(initial_window_size * streams.active_remote_count, MAXIMUM_WINDOW_SIZE)
         @inbound_window_size += increment
         streams.find(0).send_window_update_frame(increment)
       end
