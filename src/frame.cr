@@ -58,10 +58,8 @@ module HTTP2
 
     getter! payload : Bytes
 
-    @reset_error_code : Error::Code? = nil
-    @size : Int32?
-
     getter reset_error_code : Error::Code?
+    @size : Int32?
 
     protected def reset_error_code=(code : Error::Code)
       @reset_error_code = code
