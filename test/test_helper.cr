@@ -13,10 +13,16 @@ module AsyncTest
     super
   end
 
-  def wait
+  def wait(timeout : Time::Span? = nil)
+    started_at = Time.instant
+
     loop do
       Fiber.yield
       break if @done
+
+      if timeout && Time.instant - started_at >= timeout
+        flunk "async block did not finish within #{timeout}"
+      end
     end
 
     if exception = @exception

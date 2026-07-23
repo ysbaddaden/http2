@@ -248,7 +248,7 @@ module HTTP2
           raise Error.compression_error
         end
 
-        if stream.data?
+        if stream.data? || frame.flags.end_stream?
           # https://tools.ietf.org/html/rfc7540#section-8.1
           # https://tools.ietf.org/html/rfc7230#section-4.1.2
           stream.data.close_write
