@@ -364,6 +364,7 @@ module HTTP2
     private def read_rst_stream_frame(frame)
       raise Error.frame_size_error unless frame.size == RST_STREAM_FRAME_SIZE
       error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
+      frame.reset_error_code = error_code
       Log.trace { "  code=#{error_code.to_s}" }
     end
 

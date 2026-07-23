@@ -58,7 +58,14 @@ module HTTP2
 
     getter! payload : Bytes
 
+    @reset_error_code : Error::Code? = nil
     @size : Int32?
+
+    getter reset_error_code : Error::Code?
+
+    protected def reset_error_code=(code : Error::Code)
+      @reset_error_code = code
+    end
 
     # :nodoc:
     protected def initialize(@type : Type, @stream : Stream, @flags : Flags = Flags::None, @payload : Bytes? = nil, size : Int32? = nil)
