@@ -147,6 +147,13 @@ module HTTP2::HPACK
       assert_equal({":authority", "www.example.com"}, d.indexed(64))
     end
 
+    def test_huffman_string_may_span_bytes_without_completing_a_symbol_each_byte
+      value = "/cookies/set?kn1=kv1"
+      encoded = HPACK.huffman.encode(value)
+
+      assert_equal value, HPACK.huffman.decode(encoded)
+    end
+
     # http://tools.ietf.org/html/rfc7541#appendix-C.5
     def test_responses_without_huffman_encoding
       skip
