@@ -1,5 +1,5 @@
 require "http/common"
-require "http/content"
+require "./core_ext/http_content"
 
 module HTTP1
   class Connection
@@ -12,9 +12,10 @@ module HTTP1
     getter io : IO
     property version : String
 
-    # A faulty client connection SHOULD still process the current request, but
-    # MUST close the connection immediately after it to avoid request smuggling
-    # and request splitting security issues (no keep-alive, no pipeline).
+    # A faulty client connection MAY reject the current request or process it
+    # (as per transfer-encoding only), but MUST close the connection immediately
+    # after it to avoid request smuggling / splitting attempts (i.e. no
+    # keepalive).
     getter? faulty : Bool = false
 
     def initialize(@io, @version = "HTTP/1.1")
@@ -58,9 +59,21 @@ module HTTP1
       # Can't peek or didn't find LF: read line from IO; we put the limit at +1
       # byte so we can detect the limit, while never reading past the LF char.
       return unless line = io.gets(max_line_size + 1, chomp: true)
-      too_long if line.bytesize > max_line_size
+      return too_long if line.bytesize > max_line_size
 
       yield line.to_slice
+    end
+
+    private def loop_read_line(max_line_size, too_long, &)
+      loop do
+        found_line = false
+        ret = read_line(max_line_size, too_long) do |slice|
+          found_line = true
+          yield slice
+        end
+        return ret if ret
+        break unless found_line
+      end
     end
 
     # Parses a request line from *io*. Returns the *method* and *path* on
@@ -108,6 +121,7 @@ module HTTP1
         when "HTTP/1.1".to_slice
           @version = "HTTP/1.1"
         else
+          return HTTP::Status::HTTP_VERSION_NOT_SUPPORTED if http_version_like?(slice[0, space_index])
           return HTTP::Status::BAD_REQUEST
         end
         slice += space_index
@@ -120,6 +134,14 @@ module HTTP1
 
         {method, path}
       end
+    end
+
+    private def http_version_like?(slice)
+      slice.size == 8 &&
+        slice[0, 5] == "HTTP/".to_slice &&
+        (('2'.ord..'9'.ord)).includes?(slice[5]) &&
+        slice[6] == '.'.ord &&
+        (('0'.ord..'9'.ord)).includes?(slice[7])
     end
 
     # Parses a status line from *io*. Returns the HTTP version, status code and
@@ -184,39 +206,40 @@ module HTTP1
     # a `HTTP::Status` on error (a server can respond with an approriate status
     # code).
     def read_fields(fields : HTTP::Headers) : HTTP::Status?
+      read_fields { |name, value| fields.add?(name, value) }
+    end
+
+    def read_fields(& : String, String -> Bool) : HTTP::Status?
       total = 0
 
-      loop do
-        read_line(max_headers_size, HTTP::Status::REQUEST_HEADER_FIELDS_TOO_LARGE) do |slice|
-          return if slice.empty?
+      loop_read_line(max_headers_size, HTTP::Status::REQUEST_HEADER_FIELDS_TOO_LARGE) do |slice|
+        return if slice.empty?
 
-          if (total += slice.size) > max_headers_size
-            return HTTP::Status::REQUEST_HEADER_FIELDS_TOO_LARGE
-          end
-
-          colon_index = slice.index(COLON)
-          return HTTP::Status::BAD_REQUEST unless colon_index
-          return HTTP::Status::BAD_REQUEST if (ws_index = slice.index(SP)) && (ws_index < colon_index)
-          return HTTP::Status::BAD_REQUEST if (ws_index = slice.index(HTAB)) && (ws_index < colon_index)
-
-          name = field_name(slice[0, colon_index])
-          slice += colon_index + 1
-
-          # OWS before field-value
-          while slice.first? == SP
-            slice += 1
-          end
-
-          # OWS after field-value
-          while slice.last? == SP
-            slice = Slice.new(slice.to_unsafe, slice.size - 1)
-          end
-
-          value = String.new(slice)
-          {name, value}
-
-          return HTTP::Status::BAD_REQUEST unless fields.add?(name, value)
+        if (total += slice.size) > max_headers_size
+          return HTTP::Status::REQUEST_HEADER_FIELDS_TOO_LARGE
         end
+
+        colon_index = slice.index(COLON)
+        return HTTP::Status::BAD_REQUEST unless colon_index
+        return HTTP::Status::BAD_REQUEST if (ws_index = slice.index(SP)) && (ws_index < colon_index)
+        return HTTP::Status::BAD_REQUEST if (ws_index = slice.index(HTAB)) && (ws_index < colon_index)
+
+        name = field_name(slice[0, colon_index])
+        slice += colon_index + 1
+
+        # OWS before field-value
+        while slice.first? == SP
+          slice += 1
+        end
+
+        # OWS after field-value
+        while slice.last? == SP
+          slice = Slice.new(slice.to_unsafe, slice.size - 1)
+        end
+
+        value = String.new(slice)
+
+        return HTTP::Status::BAD_REQUEST unless yield(name, value)
       end
     end
 
@@ -314,56 +337,114 @@ module HTTP1
       end
     end
 
-    def http_upgrade(protocol : String, http_version : String = "HTTP/1.1") : Nil
-      @io << http_version << " 101 Switching Protocols\r\n"
+    def http_upgrade(protocol : String) : Nil
+      @io << version << " 101 Switching Protocols\r\n"
       @io << "Connection: Upgrade\r\n"
       @io << "Upgrade: " << protocol << "\r\n"
       @io << "\r\n"
       @io.flush
     end
 
-    def content(headers : HTTP::Headers, mandatory = false) : HTTP::Content?
-      content_length = HTTP.content_length(headers)
-      transfer_encoding = headers["transfer-encoding"]?
+    private def content_length(headers, &)
+      values = headers.get?("content-length")
+      return unless values
 
-      # RFC 9112, Section 6.1 says that a server receiving a request with both
-      # headers MUST close the connection after processing it to avoid request
-      # smuggling and request splitting security issues.
-      if content_length && transfer_encoding
-        @faulty = true
+      value = values.first
+      if values.size == 1 || values.all? { |v| v == value }
+        if length = value.to_u64?(whitespace: false)
+          return length
+        end
       end
 
-      # FIXME: transfer-encoding may be "gzip, chunked" for example, which means
+      yield HTTP::Status::BAD_REQUEST
+      nil
+    end
+
+    def content(headers : HTTP::Headers, mandatory = false, & : HTTP::Status ->) : HTTP::Content?
+      content_length = content_length(headers) { |status| yield status }
+      transfer_encoding = headers["transfer-encoding"]?
+
+      # RFC 9112, Section 6.1 states that a server receiving a request with both
+      # headers MUST close the connection after processing it to mitigate
+      # request smuggling / splitting attempts.
+      @faulty = true if content_length && transfer_encoding
+
+      # TODO: transfer-encoding may be "gzip, chunked" for example, which means
       # that the body has been compressed with gzip then chunked encoded (and
-      # thus must be decoded as chunked)
-      body =
-        if transfer_encoding == "chunked"
-          HTTP::ChunkedContent.new(@io)
-        elsif content_length
+      # thus must be decoded as chunked, then decompressed)
+      # NOTE: "chunked" must be the final value ("chunked, gzip" is invalid)
+      content =
+        if transfer_encoding
+          if @version == "HTTP/1.0"
+            yield HTTP::Status::BAD_REQUEST
+          elsif content_length
+            yield HTTP::Status::BAD_REQUEST
+          elsif transfer_encoding == "chunked"
+            HTTP::ChunkedContent.new(self)
+          else
+            yield HTTP::Status::NOT_IMPLEMENTED
+          end
+        elsif content_length && transfer_encoding.nil?
           HTTP::FixedLengthContent.new(@io, content_length)
         elsif mandatory
           HTTP::UnknownLengthContent.new(@io)
         end.as(HTTP::Content?)
-      #    ^-- manual cast because Crystal infers IO+ | Nil
+      #    ^-- explicit cast because Crystal infers IO+ | Nil
 
-      if body && (expect = headers["expect"]?)
+      if content && (expect = headers["expect"]?)
         if expect.compare("100-continue", case_insensitive: true) == 0
-          body.expects_continue = true
+          content.expects_continue = true
         end
       end
 
-      body
+      content
     end
+
+    # Reads chunk-size and skips chunk-ext. Returns nil on error.
+    def read_chunk_line : Int32?
+      size = 0
+      digit = false
+
+      # chunk-size [ chunk-ext ] [CR] LF
+      read_line(@max_headers_size, nil) do |slice|
+        # chunk-size
+        slice.each do |byte|
+          case byte
+          when ('0'.ord)..('9'.ord)
+            digit = true
+            size = size * 16 + (byte - '0'.ord)
+          when ('a'.ord)..('f'.ord)
+            digit = true
+            size = size * 16 + 10 + (byte - 'a'.ord)
+          when ('A'.ord)..('F'.ord)
+            digit = true
+            size = size * 16 + 10 + (byte - 'A'.ord)
+          when SP, HTAB, ';'
+            break
+          else
+            return
+          end
+        end
+
+        # skip chunk-ext
+      end
+
+      size if digit
+    end
+
+    # TODO: alt method that parses and yields every chunk-ext [ '=' value ]
+    # def read_chunk_line(& : String, String? ->) : Int32?
+    # end
 
     def write_request_line(method : String, path : String) : Nil
-      @io << method << ' ' << path << ' ' << version << "\r\n"
+      @io << method << ' ' << path << ' ' << @version << "\r\n"
     end
 
-    def write_status_line(status : String | Int32, path : String, description : String) : Nil
-      @io << version << ' ' << status << ' ' << description << "\r\n"
+    def write_status_line(status : String | Int32, description : String?) : Nil
+      @io << @version << ' ' << status << ' ' << description << "\r\n"
     end
 
-    def write_fields(fields : Headers) : Nil
+    def write_fields(fields : HTTP::Headers) : Nil
       fields.each do |name, values|
         next if name.starts_with?(':')
 
@@ -402,7 +483,7 @@ module HTTP1
       if status = headers[":status"]?
         description ||= HTTP::Status.new(status.to_i).description
         write_status_line(status, description)
-      elsif (method = headers[":method"]?) || (path = headers[":path"]?)
+      elsif (method = headers[":method"]?) && (path = headers[":path"]?)
         write_request_line(method, path)
       else
         raise ArgumentError.new(%(Missing ":status" (response) or ":method" and ":path" (request) pseudo-headers))

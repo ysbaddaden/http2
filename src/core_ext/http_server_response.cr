@@ -22,8 +22,8 @@ class HTTP::Server
 end
 
 # :nodoc:
-class HTTP::Output < HTTP::Server::Response::Output
-  def initialize(@connection : Connection, @headers : HTTP::Headers)
+class HTTP1::Output < HTTP::Server::Response::Output
+  def initialize(@connection : HTTP1::Connection, @headers : HTTP::Headers, @method : String)
   end
 
   def version=(version : String)
@@ -31,17 +31,28 @@ class HTTP::Output < HTTP::Server::Response::Output
   end
 
   def reset : Nil
-    raise NotImplementedError.new("HTTP::Output#reset")
+    raise NotImplementedError.new("HTTP1::Output#reset")
+  end
+
+  private def no_content?
+    return true if @method == "HEAD"
+
+    # NOTE: 205 (reset content) may not have a content either but an empty
+    # response is acceptable (and better handled by curl).
+    status = @headers[":status"]
+    status.starts_with?('1') || status.in?("204", "304")
   end
 
   def send_headers(description : String?) : Nil
     @sent_headers = true
 
-    if @headers["transfer-encoding"]? == "chunked"
-      @chunked = true
-    elsif @connection.version == "HTTP/1.1" && !@headers.has_key?("content-length")
-      @headers["transfer-encoding"] = "chunked"
-      @chunked = true
+    unless no_content?
+      if @headers["transfer-encoding"]? == "chunked"
+        @chunked = true
+      elsif @connection.version == "HTTP/1.1" && !@headers.has_key?("content-length")
+        @headers["transfer-encoding"] = "chunked"
+        @chunked = true
+      end
     end
 
     @connection.send_headers(@headers, description)
@@ -72,7 +83,7 @@ class HTTP::Output < HTTP::Server::Response::Output
       # see https://tools.ietf.org/html/rfc7230#section-3.3.2.
       if !@headers.has_key?("transfer-encoding") &&
           !@headers.has_key?("content-length") &&
-          !(status.not_modified? || status.no_content? || status.informational?)
+          !no_content?
         @headers["content-length"] = @out_count.to_s
       end
     end
@@ -89,9 +100,9 @@ class HTTP::Output < HTTP::Server::Response::Output
 
     @connection.send_data(slice, @chunked)
     slice.size
-  rescue ex : IO::Error
-    unbuffered_close
-    raise HTTP::Server::ClientError.new("Error while writing data to the client", ex)
+  #rescue ex : IO::Error
+  #  unbuffered_close
+  #  raise HTTP::Server::ClientError.new("Error while writing data to the client", ex)
   end
 
   def unbuffered_flush : Nil
@@ -175,11 +186,11 @@ class HTTP::Server
     @wrote_headers = uninitialized Bool
 
     # :nodoc:
-    def initialize(connection : HTTP::Connection)
+    def initialize(connection : HTTP1::Connection, method : String)
       @headers = HTTP::Headers.new
       @headers[":status"] ||= "200"
       @version = connection.version
-      output = HTTP::Output.new(connection, @headers)
+      output = HTTP1::Output.new(connection, @headers, method)
       @original_output = output
       @output = output.as(IO)
     end
@@ -202,7 +213,7 @@ class HTTP::Server
     def version=(version : String)
       check_headers
 
-      if (output = @original_output).is_a?(HTTP::Output)
+      if (output = @original_output).is_a?(HTTP1::Output)
         output.@connection.version = version
       end
       @version = version
