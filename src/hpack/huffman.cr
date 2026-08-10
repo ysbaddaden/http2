@@ -62,12 +62,14 @@ module HTTP2
         io = IO::Memory.new
         node = tree
         eos_padding = true
+        bit_size = 0
 
         bytes.each do |byte|
-          byte_has_value = false
           eos_padding = true
 
           7.downto(0) do |i|
+            bit_size += 1
+
             if byte.bit(i) == 1
               node = node.right
             else
@@ -81,16 +83,14 @@ module HTTP2
               io.write_byte(value)
               node = tree
 
-              byte_has_value = true
+              bit_size = 0
               eos_padding = true
             end
           end
-
-          # RFC 7541, section 5.2
-          raise Error.new("huffman string padding is larger than 7-bits") unless byte_has_value
         end
 
         # RFC 7541, section 5.2
+        raise Error.new("huffman string padding is larger than 7-bits") if bit_size > 7
         raise Error.new("huffman string padding must use MSB of EOS symbol") unless eos_padding
 
         io.to_s
