@@ -315,6 +315,43 @@ module HTTP2::HPACK
       assert_raises(Exception) { d.decode(bytes.to_slice) }
     end
 
+    # the following tests are from the hpack crate:
+    # https://github.com/mlalic/hpack-rs/blob/e833ecac324fb9457e04737f482328c3b5cc93fa/src/huffman.rs
+
+    def test_huffman_code_single_byte
+      assert_equal "o", HPACK.huffman.decode(slice(0x3f))
+      assert_equal "0", HPACK.huffman.decode(slice(0x07))
+      assert_equal "A", HPACK.huffman.decode(slice(0x87))
+    end
+
+    def test_huffman_code_single_char_multiple_byte
+      assert_equal "#", HPACK.huffman.decode(slice(0xff, 0xaf))
+      assert_equal "$", HPACK.huffman.decode(slice(0xff, 0xcf))
+      assert_equal "\n", HPACK.huffman.decode(slice(0xff, 0xff, 0xff, 0xf3))
+    end
+
+    def test_huffman_code_multiple_chars
+      assert_equal "!0", HPACK.huffman.decode(slice(0xfe, 0x01))
+      assert_equal " !", HPACK.huffman.decode(slice(0x53, 0xf8))
+    end
+
+    def test_eos_is_error
+      assert_raises { HPACK.huffman.decode(slice(0xff, 0xff, 0xff, 0xff)) }
+    end
+
+    def test_short_padding
+      assert_equal "o", HPACK.huffman.decode(slice(0x3f))
+    end
+
+    def test_padding_invalid_too_long
+      assert_raises { HPACK.huffman.decode(slice(0x3f, 0xff)) }
+    end
+
+    def test_padding_invalid
+      assert_raises { HPACK.huffman.decode(slice(0x3e)) }
+      assert_raises { HPACK.huffman.decode(slice(0xfe, 0x00)) }
+    end
+
     def slice(*bytes)
       Slice(UInt8).new(bytes.size) { |i| bytes[i].to_u8 }
     end
