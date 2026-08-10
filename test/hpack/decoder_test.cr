@@ -149,12 +149,125 @@ module HTTP2::HPACK
 
     # http://tools.ietf.org/html/rfc7541#appendix-C.5
     def test_responses_without_huffman_encoding
-      skip
+      d = Decoder.new(256)
+
+      first = UInt8.static_array(
+        0x48, 0x03 , 0x33, 0x30, 0x32, 0x58, 0x07, 0x70, 0x72, 0x69, 0x76, 0x61, 0x74, 0x65, 0x61, 0x1d,
+        0x4d, 0x6f , 0x6e, 0x2c, 0x20, 0x32, 0x31, 0x20, 0x4f, 0x63, 0x74, 0x20, 0x32, 0x30, 0x31, 0x33,
+        0x20, 0x32 , 0x30, 0x3a, 0x31, 0x33, 0x3a, 0x32, 0x31, 0x20, 0x47, 0x4d, 0x54, 0x6e, 0x17, 0x68,
+        0x74, 0x74 , 0x70, 0x73, 0x3a, 0x2f, 0x2f, 0x77, 0x77, 0x77, 0x2e, 0x65, 0x78, 0x61, 0x6d, 0x70,
+        0x6c, 0x65 , 0x2e, 0x63, 0x6f, 0x6d)
+      assert_equal HTTP::Headers{
+        ":status" => "302",
+        "cache-control" => "private",
+        "date" => "Mon, 21 Oct 2013 20:13:21 GMT",
+        "location" => "https://www.example.com",
+      }, d.decode(first.to_slice)
+
+      assert_equal 4, d.table.size
+      assert_equal 222, d.table.bytesize
+      assert_equal({"location", "https://www.example.com"}, d.indexed(62))
+      assert_equal({"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, d.indexed(63))
+      assert_equal({"cache-control", "private"}, d.indexed(64))
+      assert_equal({":status", "302"}, d.indexed(65))
+
+      second = UInt8.static_array(0x48, 0x83, 0x64, 0x0e, 0xff, 0xc1, 0xc0, 0xbf)
+      assert_equal HTTP::Headers{
+        ":status" => "307",
+        "cache-control" => "private",
+        "date" => "Mon, 21 Oct 2013 20:13:21 GMT",
+        "location" => "https://www.example.com",
+      }, d.decode(second.to_slice)
+
+      assert_equal 4, d.table.size
+      assert_equal 222, d.table.bytesize
+      assert_equal({":status", "307"}, d.indexed(62))
+      assert_equal({"location", "https://www.example.com"}, d.indexed(63))
+      assert_equal({"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, d.indexed(64))
+      assert_equal({"cache-control", "private"}, d.indexed(65))
+
+      third = UInt8.static_array(
+        0x88, 0xc1, 0x61, 0x1d, 0x4d, 0x6f, 0x6e, 0x2c, 0x20, 0x32, 0x31, 0x20, 0x4f, 0x63, 0x74, 0x20,
+        0x32, 0x30, 0x31, 0x33, 0x20, 0x32, 0x30, 0x3a, 0x31, 0x33, 0x3a, 0x32, 0x32, 0x20, 0x47, 0x4d,
+        0x54, 0xc0, 0x5a, 0x04, 0x67, 0x7a, 0x69, 0x70, 0x77, 0x38, 0x66, 0x6f, 0x6f, 0x3d, 0x41, 0x53,
+        0x44, 0x4a, 0x4b, 0x48, 0x51, 0x4b, 0x42, 0x5a, 0x58, 0x4f, 0x51, 0x57, 0x45, 0x4f, 0x50, 0x49,
+        0x55, 0x41, 0x58, 0x51, 0x57, 0x45, 0x4f, 0x49, 0x55, 0x3b, 0x20, 0x6d, 0x61, 0x78, 0x2d, 0x61,
+        0x67, 0x65, 0x3d, 0x33, 0x36, 0x30, 0x30, 0x3b, 0x20, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e,
+        0x3d, 0x31)
+      assert_equal HTTP::Headers{
+        ":status" => "200",
+        "cache-control" => "private",
+        "date" => "Mon, 21 Oct 2013 20:13:22 GMT",
+        "location" => "https://www.example.com",
+        "content-encoding" => "gzip",
+        "set-cookie" => "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+      }, d.decode(third.to_slice)
+
+      assert_equal 3, d.table.size
+      assert_equal 215, d.table.bytesize
+      assert_equal({"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1"}, d.indexed(62))
+      assert_equal({"content-encoding", "gzip"}, d.indexed(63))
+      assert_equal({"date", "Mon, 21 Oct 2013 20:13:22 GMT"}, d.indexed(64))
     end
 
     # http://tools.ietf.org/html/rfc7541#appendix-C.6
     def test_responses_with_huffman_encoding
-      skip
+      d = Decoder.new(256)
+
+      first = UInt8.static_array(
+        0x48, 0x82, 0x64, 0x02, 0x58, 0x85, 0xae, 0xc3, 0x77, 0x1a, 0x4b, 0x61, 0x96, 0xd0, 0x7a, 0xbe,
+        0x94, 0x10, 0x54, 0xd4, 0x44, 0xa8, 0x20, 0x05, 0x95, 0x04, 0x0b, 0x81, 0x66, 0xe0, 0x82, 0xa6,
+        0x2d, 0x1b, 0xff, 0x6e, 0x91, 0x9d, 0x29, 0xad, 0x17, 0x18, 0x63, 0xc7, 0x8f, 0x0b, 0x97, 0xc8,
+        0xe9, 0xae, 0x82, 0xae, 0x43, 0xd3)
+      assert_equal HTTP::Headers{
+        ":status" => "302",
+        "cache-control" => "private",
+        "date" => "Mon, 21 Oct 2013 20:13:21 GMT",
+        "location" => "https://www.example.com",
+      }, d.decode(first.to_slice)
+
+      assert_equal 4, d.table.size
+      assert_equal 222, d.table.bytesize
+      assert_equal({"location", "https://www.example.com"}, d.indexed(62))
+      assert_equal({"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, d.indexed(63))
+      assert_equal({"cache-control", "private"}, d.indexed(64))
+      assert_equal({":status", "302"}, d.indexed(65))
+
+      second = UInt8.static_array(0x48, 0x83, 0x64, 0x0e, 0xff, 0xc1, 0xc0, 0xbf)
+      assert_equal HTTP::Headers{
+        ":status" => "307",
+        "cache-control" => "private",
+        "date" => "Mon, 21 Oct 2013 20:13:21 GMT",
+        "location" => "https://www.example.com",
+      }, d.decode(second.to_slice)
+
+      assert_equal 4, d.table.size
+      assert_equal 222, d.table.bytesize
+      assert_equal({":status", "307"}, d.indexed(62))
+      assert_equal({"location", "https://www.example.com"}, d.indexed(63))
+      assert_equal({"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, d.indexed(64))
+      assert_equal({"cache-control", "private"}, d.indexed(65))
+
+      third = UInt8.static_array(
+        0x88, 0xc1, 0x61, 0x96, 0xd0, 0x7a, 0xbe, 0x94, 0x10, 0x54, 0xd4, 0x44, 0xa8, 0x20, 0x05, 0x95,
+        0x04, 0x0b, 0x81, 0x66, 0xe0, 0x84, 0xa6, 0x2d, 0x1b, 0xff, 0xc0, 0x5a, 0x83, 0x9b, 0xd9, 0xab,
+        0x77, 0xad, 0x94, 0xe7, 0x82, 0x1d, 0xd7, 0xf2, 0xe6, 0xc7, 0xb3, 0x35, 0xdf, 0xdf, 0xcd, 0x5b,
+        0x39, 0x60, 0xd5, 0xaf, 0x27, 0x08, 0x7f, 0x36, 0x72, 0xc1, 0xab, 0x27, 0x0f, 0xb5, 0x29, 0x1f,
+        0x95, 0x87, 0x31, 0x60, 0x65, 0xc0, 0x03, 0xed, 0x4e, 0xe5, 0xb1, 0x06, 0x3d, 0x50, 0x07)
+      assert_equal HTTP::Headers{
+        ":status" => "200",
+        "cache-control" => "private",
+        "date" => "Mon, 21 Oct 2013 20:13:22 GMT",
+        "location" => "https://www.example.com",
+        "content-encoding" => "gzip",
+        "set-cookie" => "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+      }, d.decode(third.to_slice)
+
+      assert_equal 3, d.table.size
+      assert_equal 215, d.table.bytesize
+      assert_equal({"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1"}, d.indexed(62))
+      assert_equal({"content-encoding", "gzip"}, d.indexed(63))
+      assert_equal({"date", "Mon, 21 Oct 2013 20:13:22 GMT"}, d.indexed(64))
     end
 
     def test_large_integer_literal
