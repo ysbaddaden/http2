@@ -36,11 +36,22 @@ class NotFoundHandler
   include HTTP::Handler
 
   def call(context : HTTP::Server::Context)
-    response = context.response
-    response.status_code = 404
+    request, response = context.request, context.response
     response.headers["server"] = "h2/0.0.0"
-    response.headers["content-type"] = "text/plain"
-    response << "404 NOT FOUND\n"
+
+    case request.path
+    when /^\/(1\d\d)/
+      response.status_code = $1.to_i
+    when "/204"
+      response.status_code = 204
+    when "/205"
+      response.status_code = 205
+    else
+      unless request.method == "HEAD"
+        response.headers["content-type"] = "text/plain"
+        response << "404 NOT FOUND\n"
+      end
+    end
   end
 end
 

@@ -284,6 +284,44 @@ class HTTP1::ConnectionTest < Minitest::Test
     assert_empty headers
   end
 
+  def test_read_chunk_line
+    c = connection("0\r\n")
+    assert_equal 0, c.read_chunk_line
+
+    c = connection("A0\r\n")
+    assert_equal 0xa0, c.read_chunk_line
+
+    c = connection("fa0945\r\n")
+    assert_equal 0xfa0945, c.read_chunk_line
+
+    c = connection("5; whatever\r\n")
+    assert_equal 0x5, c.read_chunk_line
+
+    c = connection("123 ; whatever\r\n")
+    assert_equal 0x123, c.read_chunk_line
+
+    c = connection("123\t; whatever\r\n")
+    assert_equal 0x123, c.read_chunk_line
+
+    c = connection("acB0; key=value; another=one\r\n")
+    assert_equal 0xacb0, c.read_chunk_line
+
+    # EOF
+    c = connection("")
+    assert_nil c.read_chunk_line
+
+    # INVALID: missing size
+    c = connection("\r\n")
+    assert_nil c.read_chunk_line
+
+    # INVALID: invalid size
+    c = connection("g\r\n")
+    assert_nil c.read_chunk_line
+
+    c = connection("1fg\r\n")
+    assert_nil c.read_chunk_line
+  end
+
   def test_content
     headers = HTTP::Headers.new
     c = connection("")
@@ -304,7 +342,9 @@ class HTTP1::ConnectionTest < Minitest::Test
     assert_instance_of HTTP::UnknownLengthContent, content = c.content(headers, mandatory: true)
     assert_equal "12345", content.try(&.gets_to_end)
     refute c.faulty?
+  end
 
+  def test_fixed_length_content
     headers = HTTP::Headers{"content-length" => "0"}
     c = connection("")
     assert_instance_of HTTP::FixedLengthContent, content = c.content(headers)
@@ -316,7 +356,9 @@ class HTTP1::ConnectionTest < Minitest::Test
     assert_instance_of HTTP::FixedLengthContent, content = c.content(headers)
     assert_equal "12345", content.try(&.gets_to_end)
     refute c.faulty?
+  end
 
+  def test_chunked_content
     headers = HTTP::Headers{"transfer-encoding" => "chunked"}
     c = connection("0\r\n\r\n")
     assert_instance_of HTTP::ChunkedContent, content = c.content(headers)
@@ -324,13 +366,13 @@ class HTTP1::ConnectionTest < Minitest::Test
     refute c.faulty?
 
     headers = HTTP::Headers{"transfer-encoding" => "chunked"}
-    c = connection("5\r\n12345\r\n0\r\n\r\n")
+    c = connection("5\r\n123450\r\n\r\n")
     assert_instance_of HTTP::ChunkedContent, content = c.content(headers)
     assert_equal "12345", content.try(&.gets_to_end)
     refute c.faulty?
 
-    # ignores content-length and reports faulty connection (must close the
-    # connection after handling the request/response).
+    # ignores content-length and reports faulty connection state (must close the
+    # connection after handling the request or response).
     headers = HTTP::Headers{"content-length" => "0", "transfer-encoding" => "chunked"}
     c = connection("0\r\n\r\n")
     assert_instance_of HTTP::ChunkedContent, c.content(headers)
@@ -338,19 +380,61 @@ class HTTP1::ConnectionTest < Minitest::Test
     assert c.faulty?
   end
 
+  def test_chunked_content_with_trailer_section
+    headers = HTTP::Headers{"transfer-encoding" => "chunked"}
+    c = connection("5\r\n123450\r\nsome-name: value\r\n\r\n")
+
+    content = c.content(headers).as(HTTP::ChunkedContent)
+    assert_nil content.trailers?
+
+    assert_equal "12345", content.try(&.gets_to_end)
+    assert_equal HTTP::Headers{"some-name" => "value"}, content.trailers?
+  end
+
   def test_http_upgrade
     c = HTTP1::Connection.new(io = IO::Memory.new)
     c.http_upgrade("h2c")
     assert_equal <<-HTTP, io.rewind.to_s
-    HTTP/1.1 101 Switching Protocols\r
-    Connection: Upgrade\r
-    Upgrade: h2c\r
-    \r\n
-    HTTP
+      HTTP/1.1 101 Switching Protocols\r
+      Connection: Upgrade\r
+      Upgrade: h2c\r
+      \r\n
+      HTTP
   end
 
   def test_write_request_line
-    skip "todo"
+    [
+      {"GET", "/"},
+      {"GET", "/?query=value&more"},
+      {"PATH", "/path?query=value&more"},
+      {"POST", "/path/to/somewhere"},
+    ].each do |(method, path)|
+      c = HTTP1::Connection.new(io = IO::Memory.new, "HTTP/1.0")
+      c.write_request_line method, path
+      assert_equal "#{method} #{path} HTTP/1.0\r\n", io.rewind.to_s
+
+      c = HTTP1::Connection.new(io = IO::Memory.new, "HTTP/1.1")
+      c.write_request_line method, path
+      assert_equal "#{method} #{path} HTTP/1.1\r\n", io.rewind.to_s
+    end
+  end
+
+  def test_write_status_line
+    [
+      {200, "OK"},
+      {400, "Bad Request"},
+      {500, "WhaTevER YoU WanT"},
+      {"404", ""},
+      {"200", nil},
+    ].each do |(status, description)|
+      c = HTTP1::Connection.new(io = IO::Memory.new, "HTTP/1.0")
+      c.write_status_line status, description
+      assert_equal "HTTP/1.0 #{status} #{description}\r\n", io.rewind.to_s
+
+      c = HTTP1::Connection.new(io = IO::Memory.new, "HTTP/1.1")
+      c.write_status_line status, description
+      assert_equal "HTTP/1.1 #{status} #{description}\r\n", io.rewind.to_s
+    end
   end
 
   def test_write_fields
