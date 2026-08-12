@@ -3,10 +3,14 @@
 
 CRYSTAL = crystal
 CRFLAGS =
+TESTS = test/*_test.cr test/**/*_test.cr
+OPTS = --chaos --parallel 4
+
+-include local.mk
 
 bin/%: samples/%.cr src/*.cr src/**/*.cr
 	@mkdir -p bin
-	$(CRYSTAL) build $(CRFLAGS) -o $@ $<
+	$(CRYSTAL) build -Dwithout_mt $(CRFLAGS) -o $@ $<
 
 ssl: .PHONY
 	@mkdir -p ssl
@@ -14,4 +18,4 @@ ssl: .PHONY
 		-sha256 -days 3650 -nodes -subj "/C=XX/ST=X/L=X/O=X/OU=X/CN=X"
 
 test: .PHONY
-	$(CRYSTAL) run $(CRFLAGS) test/*_test.cr test/**/*_test.cr
+	$(CRYSTAL) run -Dwithout_mt $(CRFLAGS) $(TESTS) -- $(OPTS)

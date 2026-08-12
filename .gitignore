@@ -3,3 +3,4 @@
 /lib
 /bin/*
 /ssl
+/local.mk
