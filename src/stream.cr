@@ -74,7 +74,7 @@ module HTTP2
     #
     # FIXME: reports `false` if a zero-sized DATA was received.
     protected def data? : Bool
-      data.size != 0
+      (d = @data) ? d.size != 0 : false
     end
 
     # Received body.
@@ -407,8 +407,21 @@ module HTTP2
       end
     end
 
-    private def state=(@state)
+    private def state=(new_state)
+      @state = new_state
       Log.trace { "; Stream is now #{state}" }
+      if new_state == State::CLOSED
+        release_buffers
+        connection.streams.remove(id)
+      end
+    end
+
+    # Releases stream buffers to allow GC to reclaim memory. Called when stream closes.
+    private def release_buffers : Nil
+      if d = @data
+        d.close
+        @data = nil
+      end
     end
 
     # :nodoc:

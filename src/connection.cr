@@ -169,27 +169,38 @@ module HTTP2
       end
     end
 
-    private def read_frame_header
-      buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
-      size, type = (buf >> 8).to_i, buf & 0xff
-      flags = Frame::Flags.new(read_byte)
-      _, stream_id = read_stream_id
+    private def read_frame_header : Frame
+      loop do
+        buf = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+        size, type = (buf >> 8).to_i, buf & 0xff
+        flags = Frame::Flags.new(read_byte)
+        _, stream_id = read_stream_id
 
-      if size > remote_settings.max_frame_size
-        raise Error.frame_size_error
+        if size > remote_settings.max_frame_size
+          raise Error.frame_size_error
+        end
+
+        frame_type = Frame::Type.new(type.to_i)
+
+        # RFC 7540: WINDOW_UPDATE and RST_STREAM may be received for closed
+        # streams. Skip them so we don't re-create a removed stream entry.
+        if streams.recently_closed?(stream_id) &&
+            {Frame::Type::WINDOW_UPDATE, Frame::Type::RST_STREAM}.includes?(frame_type)
+          io.skip(size)
+          next
+        end
+
+        unless frame_type.priority? || streams.valid?(stream_id)
+          raise Error.protocol_error("INVALID stream_id ##{stream_id}")
+        end
+
+        stream = streams.find(stream_id, consume: !frame_type.priority?)
+        frame = Frame.new(frame_type, stream, flags, size: size)
+
+        Log.trace { "recv #{frame.debug(color: :light_cyan)}" }
+
+        return frame
       end
-
-      frame_type = Frame::Type.new(type.to_i)
-      unless frame_type.priority? || streams.valid?(stream_id)
-        raise Error.protocol_error("INVALID stream_id ##{stream_id}")
-      end
-
-      stream = streams.find(stream_id, consume: !frame_type.priority?)
-      frame = Frame.new(frame_type, stream, flags, size: size)
-
-      Log.trace { "recv #{frame.debug(color: :light_cyan)}" }
-
-      frame
     end
 
     private def read_data_frame(frame)
@@ -312,6 +323,9 @@ module HTTP2
     # decompressing everything
     private def read_headers_payload(frame, size)
       stream = frame.stream
+      max_size = remote_settings.max_header_list_size || 65_536
+
+      raise Error.protocol_error("HEADER list size exceeds limit") if size > max_size
 
       pointer = GC.malloc_atomic(size).as(UInt8*)
       io.read_fully(pointer.to_slice(size))
@@ -327,7 +341,8 @@ module HTTP2
           raise Error.protocol_error("EXPECTED continuation frame for stream ##{stream.id} not ##{frame.stream.id}")
         end
 
-        # FIXME: raise if the payload grows too big
+        raise Error.protocol_error("HEADER list size exceeds limit") if size + frame.size > max_size
+
         pointer = pointer.realloc(size + frame.size)
         io.read_fully((pointer + size).to_slice(frame.size))
 
@@ -561,6 +576,7 @@ module HTTP2
       @mutex.synchronize do
         unless closed?
           @closed = true
+          streams.clear
 
           unless io.closed? || !notify
             if error

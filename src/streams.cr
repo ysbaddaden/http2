@@ -1,10 +1,15 @@
 require "./stream"
 
 module HTTP2
+  # Maximum number of closed stream IDs to retain for late WINDOW_UPDATE/RST_STREAM
+  # frame handling (RFC 7540). Prevents unbounded memory growth on long-lived connections.
+  MAX_CLOSED_STREAM_IDS = 10_000
+
   class Streams
     # :nodoc:
     protected def initialize(@connection : Connection, type : Connection::Type)
       @streams = {} of Int32 => Stream
+      @closed_stream_ids = [] of Int32
       @mutex = Mutex.new  # OPTIMIZE: use Sync::RWLock instead
       @highest_remote_id = 0
 
@@ -12,6 +17,39 @@ module HTTP2
         @id_counter = 0
       else
         @id_counter = -1
+      end
+    end
+
+    # Removes a closed stream from the active map. Retains its ID so that late
+    # WINDOW_UPDATE / RST_STREAM frames (permitted by RFC 7540) can be
+    # identified and skipped without re-creating the stream entry.
+    # Bounded to MAX_CLOSED_STREAM_IDS to prevent unbounded memory growth.
+    protected def remove(id : Int32) : Nil
+      return if id == 0
+      @mutex.synchronize do
+        @streams.delete(id)
+        unless @closed_stream_ids.includes?(id)
+          @closed_stream_ids << id
+          prune_closed_stream_ids if @closed_stream_ids.size > MAX_CLOSED_STREAM_IDS
+        end
+      end
+    end
+
+    private def prune_closed_stream_ids : Nil
+      excess = @closed_stream_ids.size - MAX_CLOSED_STREAM_IDS
+      @closed_stream_ids = @closed_stream_ids[excess..] if excess > 0
+    end
+
+    # Returns true if the stream was closed and removed from the active map.
+    protected def recently_closed?(id : Int32) : Bool
+      @mutex.synchronize { @closed_stream_ids.includes?(id) }
+    end
+
+    # Releases all stream and closed-ID references. Called when the connection closes.
+    protected def clear : Nil
+      @mutex.synchronize do
+        @streams.clear
+        @closed_stream_ids.clear
       end
     end
 

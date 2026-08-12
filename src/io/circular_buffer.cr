@@ -87,6 +87,9 @@ class IO::CircularBuffer < IO
     @closed |= how
     reschedule_read_fiber
     reschedule_write_fiber
+    # Clear fiber references so closed buffers don't retain waiting fibers
+    @read_fiber = nil
+    @write_fiber = nil
   end
 
   def closed?(how : Closed = Closed::All)

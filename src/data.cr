@@ -74,6 +74,7 @@ module HTTP2
     def close : Nil
       close_read
       close_write
+      @buffer = nil
     end
 
     # Returns the collected size in bytes of streamed DATA frames.
