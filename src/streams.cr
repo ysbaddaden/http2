@@ -3,15 +3,16 @@ require "./stream"
 module HTTP2
   class Streams
     # :nodoc:
-    protected def initialize(@connection : Connection, type : Connection::Type)
+    protected def initialize(@connection : Connection, @type : Connection::Type)
       @streams = {} of Int32 => Stream
       @mutex = Mutex.new  # OPTIMIZE: use Sync::RWLock instead
       @highest_remote_id = 0
 
-      if type.server?
-        @id_counter = 0
-      else
+      case @type
+      in .client?
         @id_counter = -1
+      in .server?
+        @id_counter = 0
       end
     end
 
@@ -24,9 +25,11 @@ module HTTP2
     def find(id : Int32, consume : Bool = true) : Stream
       @mutex.synchronize do
         @streams[id] ||= begin
-          if max = @connection.local_settings.max_concurrent_streams
-            if unsafe_active_count(1) >= max
-              raise Error.refused_stream("MAXIMUM capacity reached")
+          if @type.peer.initiates?(id)
+            if max = @connection.local_settings.max_concurrent_streams
+              if unsafe_active_count(@type.peer) >= max
+                raise Error.refused_stream("MAXIMUM peer-initiated stream capacity reached")
+              end
             end
           end
           if id > @highest_remote_id && consume
@@ -43,12 +46,13 @@ module HTTP2
       end
     end
 
-    # Returns true if the incoming stream id is valid for the current connection.
-    protected def valid?(id : Int32)
-      id == 0 || (                                 # stream #0 is always valid
-        (id % 2) == 1 && (                         # incoming streams are odd-numbered
-          @mutex.synchronize { @streams[id]? } ||  # streams already exists
-          id >= @highest_remote_id                 # stream ids must grow (not shrink)
+    # Returns true if the incoming *stream_id* is valid for the current
+    # connection.
+    protected def valid?(stream_id : Int32)
+      stream_id == 0 || (                                # stream #0 is always valid, or
+        @type.peer.initiates?(stream_id) && (            # peer owns the stream_id, and
+          @mutex.synchronize { @streams[stream_id]? } || # stream already exists, or
+          stream_id >= @highest_remote_id                # stream id grows (can't shrink)
         )
       )
     end
@@ -58,8 +62,8 @@ module HTTP2
     def create(state = Stream::State::IDLE) : Stream
       @mutex.synchronize do
         if max = @connection.remote_settings.max_concurrent_streams
-          if unsafe_active_count(0) >= max
-            raise Error.internal_error("MAXIMUM outgoing stream capacity reached")
+          if unsafe_active_count(@type) >= max
+            raise Error.refused_stream("MAXIMUM outgoing stream capacity reached")
           end
         end
         id = @id_counter += 2
@@ -68,14 +72,19 @@ module HTTP2
       end
     end
 
-    # Counts active ingnoring (type=1) or outgoing (type=0) streams.
-    protected def active_count(type) : Int32
+    # Counts active streams for the connection type or its peer. For example:
+    #
+    # ```
+    # outgoing = active_count(@type)
+    # incoming = active_count(@type.peer)
+    # ```
+    protected def active_count(type : Connection::Type) : Int32
       @mutex.synchronize { unsafe_active_count(type) }
     end
 
-    private def unsafe_active_count(type) : Int32
+    private def unsafe_active_count(type : Connection::Type) : Int32
       @streams.reduce(0) do |count, (_, stream)|
-        if stream.id == 0 || stream.id % 2 == type && stream.active?
+        if type.initiates?(stream.id) && stream.active?
           count + 1
         else
           count
