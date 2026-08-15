@@ -58,6 +58,10 @@ module HTTP2
 
     getter! payload : Bytes
 
+    # The error code received by a RST_STREAM frame.
+    getter error : Error::Code = :NO_ERROR
+    protected setter error : Error::Code
+
     @size : Int32?
 
     # :nodoc:
