@@ -39,6 +39,26 @@ module AsyncTest
   end
 end
 
+module HTTP2
+  module TestHelpers
+    def new_connection(type : Connection::Type, *frames)
+      io = IO::Memory.new
+      frames.each { |frame| write_frame(io, *frame) }
+      io.rewind
+      Connection.new(io, type)
+    end
+
+    def write_frame(io : IO, type : Frame::Type, flags : Frame::Flags, stream_id : Int, payload : Bytes? = nil)
+      size = payload.try(&.size.to_u32) || 0_u32
+      io.write_bytes((size << 8) | type.to_u8, IO::ByteFormat::BigEndian)
+      io.write_byte(flags.to_u8)
+      io.write_bytes(stream_id.to_u32, IO::ByteFormat::BigEndian)
+      io.write(payload) if payload
+    end
+  end
+end
+
 class Minitest::Test
   include AsyncTest
+  include HTTP2::TestHelpers
 end
