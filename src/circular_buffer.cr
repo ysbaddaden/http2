@@ -1,3 +1,6 @@
+require "sync/mu"
+require "sync/cv"
+
 # A Circular Buffer IO object.
 #
 # Allocates a memory buffer of a fixed capacity that will never be reallocated.
@@ -7,14 +10,14 @@
 #
 # Example:
 # ```
-# io = IO::CircularBuffer.new(32)
+# io = HTTP2::CircularBuffer.new(32)
 #
 # io.write(UInt8.slice(1, 2, 3, 4, 5))
 # p io.size # => 5
 #
-# io.close(IO::CircularBuffer::Closed::Write)
-# p io.closed?(IO::CircularBuffer::Closed::Write) # => true
-# p io.closed?(IO::CircularBuffer::Closed::Read)  # => false
+# io.close(HTTP2::CircularBuffer::Closed::Write)
+# p io.closed?(HTTP2::CircularBuffer::Closed::Write) # => true
+# p io.closed?(HTTP2::CircularBuffer::Closed::Read)  # => false
 #
 # bytes = Bytes.new(32)
 # io.read(bytes) # => 5
@@ -31,16 +34,16 @@
 # The following example will write 16 bytes then block until at least 8 bytes
 # are read from it:
 # ```
-# io = IO::CircularBuffer.new(16)
+# io = HTTP2::CircularBuffer.new(16)
 # io.write(Bytes.new(24))
 # ```
 #
 # This will block until at least 1 byte is written:
 # ```
-# io = IO::CircularBuffer.new(16)
+# io = HTTP2::CircularBuffer.new(16)
 # io.read(Bytes.new(8))
 # ```
-class IO::CircularBuffer < IO
+class HTTP2::CircularBuffer < IO
   @[Flags]
   enum Closed
     Read
@@ -53,11 +56,14 @@ class IO::CircularBuffer < IO
   def initialize(capacity : Int)
     String.check_capacity_in_bounds(capacity)
     @capacity = capacity.to_i
-    @buffer = GC.malloc_atomic(capacity).as(UInt8*)
+    @buffer = Pointer(UInt8).null
     @read_offset = 0
     @write_offset = 0
     @bytesize = 0
     @closed = Closed::None
+    @mu = Sync::MU.new
+    @readers = Sync::CV.new
+    @writers = Sync::CV.new
   end
 
   # Returns the current size of the buffer, that is how many bytes are available
@@ -78,19 +84,17 @@ class IO::CircularBuffer < IO
     @bytesize == @capacity
   end
 
-  private def eof?
-    closed?(Closed::Write) && empty?
-  end
-
   # Close the buffer for reading or writing or both.
-  def close(how : Closed = Closed::All) : Nil
-    @closed |= how
-    reschedule_read_fiber
-    reschedule_write_fiber
+  def close(closed : Closed = :all) : Nil
+    synchronize do
+      @closed |= closed
+      @readers.broadcast if closed.read?
+      @writers.broadcast if closed.write?
+    end
   end
 
-  def closed?(how : Closed = Closed::All)
-    @closed & how == how
+  def closed?(closed : Closed = :all)
+    (@closed & closed) == closed
   end
 
   # Tries to fill the slice with bytes from the buffer. If the buffer is empty,
@@ -98,7 +102,7 @@ class IO::CircularBuffer < IO
   # some bytes are written to the buffer.
   def read(slice : Bytes)
     read_impl(slice.size) do |len|
-      (@buffer + @read_offset).copy_to(slice.to_unsafe, len)
+      (buffer + @read_offset).copy_to(slice.to_unsafe, len)
       slice += len
     end
   end
@@ -107,7 +111,7 @@ class IO::CircularBuffer < IO
   # intermediary Slice. This will block if the buffer is empty.
   def copy_to(io : IO, size : Int)
     read_impl(size.to_i) do |len|
-      slice = (@buffer + @read_offset).to_slice(len)
+      slice = (buffer + @read_offset).to_slice(len)
       io.write(slice)
     end
   end
@@ -117,7 +121,7 @@ class IO::CircularBuffer < IO
   # block until some bytes are read from the buffer.
   def write(slice : Bytes) : Nil
     write_impl(slice.size) do |len|
-      (@buffer + @write_offset).copy_from(slice.to_unsafe, len)
+      (buffer + @write_offset).copy_from(slice.to_unsafe, len)
       slice += len
     end
   end
@@ -126,66 +130,67 @@ class IO::CircularBuffer < IO
   # avoiding an intermediary Slice. This will block if the buffer is full.
   def copy_from(io : IO, size : Int)
     write_impl(size.to_i) do |len|
-      slice = (@buffer + @write_offset).to_slice(len)
+      slice = (buffer + @write_offset).to_slice(len)
       io.read_fully(slice)
+    end
+  end
+
+  private def synchronize(&)
+    @mu.lock
+    begin
+      yield
+    ensure
+      @mu.unlock
     end
   end
 
   private def read_impl(total, &)
     count = 0
 
-    loop do
-      wait_readable
-      return 0 if eof?
+    synchronize do
+      while true
+        available = wait_readable
+        break if available == 0 # EOF
 
-      len = Math.min(total - count, readable_bytesize)
-      yield len
+        len = Math.min(total - count, available)
+        yield len
 
-      @read_offset = (@read_offset + len) % @capacity
-      @bytesize -= len
-      count += len
+        @read_offset = (@read_offset + len) % @capacity
+        @bytesize -= len
+        count += len
 
-      reschedule_write_fiber
-      return count if total <= count || empty?
+        @writers.signal
+        break if count == total || empty?
+      end
     end
+
+    count
   end
 
   private def write_impl(total, &)
     count = total
 
-    loop do
-      wait_writeable
+    synchronize do
+      while true
+        available = wait_writeable
 
-      len = Math.min(count, writeable_bytesize)
-      yield len
+        len = Math.min(count, available)
+        yield len
 
-      @write_offset = (@write_offset + len) % @capacity
-      @bytesize += len
-      count -= len
+        @write_offset = (@write_offset + len) % @capacity
+        @bytesize += len
+        count -= len
 
-      reschedule_read_fiber
-      return total if count == 0
-    end
-  end
-
-  private def reschedule_read_fiber
-    if fiber = @read_fiber
-      @read_fiber = nil
-      Crystal::Scheduler.enqueue(fiber)
-    end
-  end
-
-  private def reschedule_write_fiber
-    if fiber = @write_fiber
-      @write_fiber = nil
-      Crystal::Scheduler.enqueue(fiber)
+        @readers.signal
+        return total if count == 0
+      end
     end
   end
 
   private def readable_bytesize
     if @read_offset < @write_offset
       @write_offset - @read_offset
-    elsif (@read_offset > @write_offset) || any?
+    elsif @read_offset > @write_offset || any?
       @capacity - @read_offset
     else
       0
@@ -202,32 +207,36 @@ class IO::CircularBuffer < IO
     end
   end
 
+  # NOTE: @mu must be locked
   private def wait_readable
-    loop do
-      raise IO::Error.new("closed buffer (#{@closed})") if closed?(Closed::Read)
-      return if eof?
+    while true
+      if @closed.read?
+        raise IO::Error.new("Closed stream")
+      end
 
-      reschedule_write_fiber if empty?
-      return if any? || eof?
+      available = readable_bytesize
+      return available unless available == 0
+      return 0 if @closed.write? # EOF
 
-      @read_fiber = Fiber.current
-      Crystal::Scheduler.reschedule
+      @readers.wait pointerof(@mu)
     end
-  ensure
-    @read_fiber = nil
   end
 
+  # NOTE: @mu must be locked
   private def wait_writeable
-    loop do
-      raise IO::Error.new("closed buffer (#{@closed})") if closed?(Closed::Write)
+    while true
+      unless @closed.none?
+        raise IO::Error.new("Closed stream")
+      end
 
-      reschedule_read_fiber if full?
-      return unless full?
+      available = writeable_bytesize
+      return available unless available == 0
 
-      @write_fiber = Fiber.current
-      Crystal::Scheduler.reschedule
+      @writers.wait pointerof(@mu)
     end
-  ensure
-    @write_fiber = nil
+  end
+
+  private def buffer
+    @buffer ||= GC.malloc_atomic(@capacity).as(UInt8*)
   end
 end

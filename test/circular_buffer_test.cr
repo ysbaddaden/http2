@@ -1,54 +1,54 @@
-require "../test_helper"
-require "../../src/io/circular_buffer"
+require "./test_helper"
+require "../src/circular_buffer"
 
-class IO::CircularBufferTest < Minitest::Test
+class HTTP2::CircularBufferTest < Minitest::Test
   def test_close
-    cb = IO::CircularBuffer.new(32)
+    cb = CircularBuffer.new(32)
     cb.close
     assert cb.closed?
-    assert cb.closed?(IO::CircularBuffer::Closed::Read)
-    assert cb.closed?(IO::CircularBuffer::Closed::Write)
+    assert cb.closed?(:read)
+    assert cb.closed?(:write)
   end
 
   def test_close_read
-    cb = IO::CircularBuffer.new(32)
-    cb.close(IO::CircularBuffer::Closed::Read)
+    cb = CircularBuffer.new(32)
+    cb.close(:read)
     refute cb.closed?
-    assert cb.closed?(IO::CircularBuffer::Closed::Read)
-    refute cb.closed?(IO::CircularBuffer::Closed::Write)
+    assert cb.closed?(:read)
+    refute cb.closed?(:write)
   end
 
   def test_close_write
-    cb = IO::CircularBuffer.new(32)
-    cb.close(IO::CircularBuffer::Closed::Write)
+    cb = CircularBuffer.new(32)
+    cb.close(:write)
     refute cb.closed?
-    refute cb.closed?(IO::CircularBuffer::Closed::Read)
-    assert cb.closed?(IO::CircularBuffer::Closed::Write)
+    refute cb.closed?(:read)
+    assert cb.closed?(:write)
   end
 
   def test_close_resumes_pending_read_fiber
-    cb = IO::CircularBuffer.new(32)
+    cb = CircularBuffer.new(32)
     async { cb.write Bytes.new(64) }
     cb.close
     assert_raises(IO::Error) { wait }
   end
 
   def test_close_resumes_pending_write_fiber
-    cb = IO::CircularBuffer.new(32)
+    cb = CircularBuffer.new(32)
     async { cb.read Bytes.new(64) }
     cb.close
     assert_raises(IO::Error) { wait }
   end
 
   def test_read_from_closed_stream
-    cb = IO::CircularBuffer.new(32)
-    cb.close(IO::CircularBuffer::Closed::Read)
+    cb = CircularBuffer.new(32)
+    cb.close(:read)
     assert_raises(IO::Error) { cb.read(Bytes.new(1)) }
   end
 
   def test_write_to_closed_stream
-    cb = IO::CircularBuffer.new(32)
-    cb.close(IO::CircularBuffer::Closed::Write)
+    cb = CircularBuffer.new(32)
+    cb.close(:write)
     assert_raises(IO::Error) { cb.write(Bytes.new(1)) }
   end
 
@@ -56,9 +56,9 @@ class IO::CircularBufferTest < Minitest::Test
     buf = Bytes.new(1) { 1_u8 }
     buf2 = Bytes.new(2)
 
-    cb = IO::CircularBuffer.new(32)
+    cb = CircularBuffer.new(32)
     cb.write(buf)
-    cb.close(IO::CircularBuffer::Closed::Write)
+    cb.close(:write)
 
     assert_equal 1, cb.read(buf2)
     assert_equal 1, buf2[0]
@@ -68,7 +68,7 @@ class IO::CircularBufferTest < Minitest::Test
   def test_read_and_write_within_capacity
     buf = Bytes.new(16) { |i| i.to_u8 * 2 }
     buf2 = Bytes.new(16)
-    cb = IO::CircularBuffer.new(32)
+    cb = CircularBuffer.new(32)
 
     cb.write(buf)
     assert_equal 16, cb.size
@@ -87,7 +87,7 @@ class IO::CircularBufferTest < Minitest::Test
 
   def test_circular_read_and_write_within_capacity
     buf2 = Bytes.new(16)
-    cb = IO::CircularBuffer.new(32)
+    cb = CircularBuffer.new(32)
 
     1.upto(10) do |i|
       buf = Bytes.new(16) { |j| j.to_u8 * i }
@@ -102,7 +102,7 @@ class IO::CircularBufferTest < Minitest::Test
     buf2 = Bytes.new(32) { |i| i.to_u8 * 2 }
     buf3 = Bytes.new(32)
 
-    cb = IO::CircularBuffer.new(32)
+    cb = CircularBuffer.new(32)
     cb.write(buf1)
 
     spawn do
@@ -117,7 +117,7 @@ class IO::CircularBufferTest < Minitest::Test
   end
 
   def test_read_and_write_overflow_to_full_capacity
-    cb = IO::CircularBuffer.new(32)
+    cb = CircularBuffer.new(32)
     cb.write(Bytes.new(8))
     cb.skip(8)
 
@@ -132,7 +132,7 @@ class IO::CircularBufferTest < Minitest::Test
     buf = Bytes.new(24) { |j| j.to_u8 * 2 }
     buf2 = Bytes.new(16)
 
-    cb = IO::CircularBuffer.new(32)
+    cb = CircularBuffer.new(32)
     cb.write(buf)
     cb.skip(8)
 
@@ -146,14 +146,14 @@ class IO::CircularBufferTest < Minitest::Test
   def test_read_and_write_over_capacity_slices
     i = Bytes.new(1 * 1024 * 1024) { |i| i.to_u8! }
     o = Bytes.new(1 * 1024 * 1024)
-    cb = IO::CircularBuffer.new(64 * 1024)
+    cb = CircularBuffer.new(64 * 1024)
 
     fiber = Fiber.current
     read = 0
 
     spawn do
       cb.write(i)
-      cb.close(IO::CircularBuffer::Closed::Write)
+      cb.close(:write)
     end
 
     spawn do
@@ -173,7 +173,7 @@ class IO::CircularBufferTest < Minitest::Test
   def test_read_and_write_arbitrary_sized_chunks
     i = Bytes.new(1 * 1024 * 1024) { |i| i.to_u8! }
     o = Bytes.new(1 * 1024 * 1024)
-    cb = IO::CircularBuffer.new(64 * 1024)
+    cb = CircularBuffer.new(64 * 1024)
 
     fiber = Fiber.current
 
@@ -186,7 +186,7 @@ class IO::CircularBufferTest < Minitest::Test
         break if (count += len) == i.size
       end
 
-      cb.close(IO::CircularBuffer::Closed::Write)
+      cb.close(:write)
     end
 
     spawn do
@@ -207,7 +207,7 @@ class IO::CircularBufferTest < Minitest::Test
   end
 
   def test_copy_to
-    cb = IO::CircularBuffer.new(10)
+    cb = CircularBuffer.new(10)
     message = "an incredible message"
 
     IO.pipe do |r, w|
@@ -215,7 +215,7 @@ class IO::CircularBufferTest < Minitest::Test
 
       spawn do
         cb << message
-        cb.close(IO::CircularBuffer::Closed::Write)
+        cb.close(:write)
       end
 
       spawn do
@@ -232,7 +232,7 @@ class IO::CircularBufferTest < Minitest::Test
   end
 
   def test_copy_from
-    cb = IO::CircularBuffer.new(10)
+    cb = CircularBuffer.new(10)
     message = "an incredible message"
 
     IO.pipe do |r, w|
