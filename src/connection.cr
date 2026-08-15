@@ -18,6 +18,25 @@ module HTTP2
     enum Type
       CLIENT
       SERVER
+
+      # Returns the remote endpoint type.
+      def peer : self
+        case self
+        in CLIENT
+          SERVER
+        in SERVER
+          CLIENT
+        end
+      end
+
+      # Returns true if *stream_id* is initiated by this endpoint.
+      def initiates?(stream_id : Int32) : Bool
+        # RFC 9113 assigns odd stream IDs to client-initiated streams and even
+        # stream IDs to server-initiated streams. This compares the stream ID's
+        # oddness to whether this endpoint is the client; it does not rely on
+        # enum numeric values.
+        stream_id > 0 && stream_id.odd? == client?
+      end
     end
 
     # ACK frame flag == END_STREAM...
@@ -514,7 +533,7 @@ module HTTP2
 
       # if @inbound_window_size <= 0
       if @inbound_window_size < (initial_window_size // 2)
-        increment = Math.min(initial_window_size * streams.active_count(1), MAXIMUM_WINDOW_SIZE)
+        increment = Math.min(initial_window_size * streams.active_count(@type.peer), MAXIMUM_WINDOW_SIZE)
         @inbound_window_size += increment
         streams.find(0).send_window_update_frame(increment)
       end
