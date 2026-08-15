@@ -325,7 +325,7 @@ module HTTP2
       end
     end
 
-    # OPTIMIZE: consider IO::CircularBuffer and decompressing HPACK headers
+    # OPTIMIZE: consider CircularBuffer and decompressing HPACK headers
     # in-parallel instead of reallocating pointers and eventually
     # decompressing everything
     private def read_headers_payload(frame, size)
