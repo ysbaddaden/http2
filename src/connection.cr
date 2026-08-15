@@ -231,7 +231,6 @@ module HTTP2
       end
     end
 
-    # TODO: if HEADERS has END_STREAM flag tell STREAM that it WON'T receive DATA
     private def read_headers_frame(frame)
       stream = frame.stream
 
