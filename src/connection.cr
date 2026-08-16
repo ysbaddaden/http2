@@ -529,8 +529,8 @@ module HTTP2
     # available size shrinks below half the initial window size, then we send a
     # WINDOW_UPDATE frame to increment it by the initial window size * the
     # number of active streams, respecting `MAXIMUM_WINDOW_SIZE`.
-    private def consume_inbound_window_size(len)
-      @inbound_window_size -= len
+    private def consume_inbound_window_size(size)
+      @inbound_window_size -= size
       initial_window_size = local_settings.initial_window_size
 
       # if @inbound_window_size <= 0
@@ -542,19 +542,21 @@ module HTTP2
     end
 
     protected def outbound_window_size
-      @outbound_window_size.get
+      @outbound_window_size.get(:relaxed)
     end
 
-    # Tries to consume *len* bytes from the connection outbound window size, but
-    # may return a lower value, or even 0.
-    protected def consume_outbound_window_size(len)
-      loop do
-        window_size = @outbound_window_size.get
+    # Tries to consume *size* bytes from the connection outbound window size,
+    # but may return a lower value, or even 0.
+    protected def consume_outbound_window_size(size)
+      window_size = outbound_window_size
+
+      while true
         return 0 if window_size == 0
 
-        actual = Math.min(len, window_size)
-        _, success = @outbound_window_size.compare_and_set(window_size, window_size - actual)
-        return actual if success
+        available = Math.min(size, window_size)
+
+        window_size, success = @outbound_window_size.compare_and_set(window_size, window_size - available, :relaxed, :relaxed)
+        return available if success
       end
     end
 
@@ -563,11 +565,8 @@ module HTTP2
       if outbound_window_size.to_i64 + increment > MAXIMUM_WINDOW_SIZE
         raise Error.flow_control_error
       end
-      @outbound_window_size.add(increment)
-
-      if outbound_window_size > 0
-        streams.each(&.resume_writeable)
-      end
+      @outbound_window_size.add(increment, :relaxed)
+      streams.each(&.resume_senders)
     end
 
     # Terminates the HTTP/2 connection.
