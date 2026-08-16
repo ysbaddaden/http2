@@ -69,6 +69,9 @@ module HTTP2
 
       @senders = uninitialized ReferenceStorage(Sync::ConditionVariable)
       Sync::ConditionVariable.unsafe_construct(pointerof(@senders), @mutex.to_reference)
+
+      @data = uninitialized Data
+      @data = Data.new(self, connection.local_settings.initial_window_size)
     end
 
     # Returns true if the stream is in an active `#state`, that is OPEN or
@@ -93,9 +96,7 @@ module HTTP2
     # connected peer sends more DATA frames.
     #
     # See `Data` for more details.
-    def data : Data
-      @data ||= Data.new(self, connection.local_settings.initial_window_size)
-    end
+    getter data : Data
 
     # Received HTTP headers. In a server context they are headers of the
     # received client request; in a client context they are headers of the
