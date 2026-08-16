@@ -15,9 +15,9 @@ require "sync/cv"
 # io.write(UInt8.slice(1, 2, 3, 4, 5))
 # p io.size # => 5
 #
-# io.close(HTTP2::CircularBuffer::Closed::Write)
-# p io.closed?(HTTP2::CircularBuffer::Closed::Write) # => true
-# p io.closed?(HTTP2::CircularBuffer::Closed::Read)  # => false
+# io.close(:write)
+# p io.closed?(:write) # => true
+# p io.closed?(:read)  # => false
 #
 # bytes = Bytes.new(32)
 # io.read(bytes) # => 5
