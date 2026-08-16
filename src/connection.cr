@@ -1,5 +1,5 @@
 require "colorize"
-require "mutex"
+require "sync/mutex"
 require "./log"
 require "./config"
 require "./errors"
@@ -58,7 +58,10 @@ module HTTP2
     def initialize(@io : IO, @type : Type)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
-      @mutex = Mutex.new(:unchecked)
+
+      @mutex = uninitialized ReferenceStorage(Sync::Mutex)
+      Sync::Mutex.unsafe_construct(pointerof(@mutex), Sync::Type::Unchecked)
+
       @closed = false
 
       @hpack_encoder = HPACK::Encoder.new(
@@ -477,7 +480,7 @@ module HTTP2
     # frames, otherwise HPACK compression synchronisation could end up corrupted
     # if another HEADERS frame for another stream was sent in between.
     def send(frame : Frame | Array(Frame)) : Nil
-      @mutex.synchronize do
+      @mutex.to_reference.synchronize do
         case frame
         in Frame
           write(frame)
@@ -577,7 +580,7 @@ module HTTP2
     def close(error : Error? = nil, notify : Bool = true)
       return if closed?
 
-      @mutex.synchronize do
+      @mutex.to_reference.synchronize do
         unless closed?
           @closed = true
 
