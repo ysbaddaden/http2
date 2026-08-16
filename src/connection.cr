@@ -255,7 +255,7 @@ module HTTP2
 
         begin
           if stream.data?
-            hpack_decoder.decode(buffer, stream.trailers)
+            hpack_decoder.decode(buffer, stream.trailers = HTTP::Headers.new)
           else
             hpack_decoder.decode(buffer, stream.headers)
             if @type.server?
