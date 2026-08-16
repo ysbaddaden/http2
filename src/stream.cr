@@ -70,6 +70,8 @@ module HTTP2
       @senders = uninitialized ReferenceStorage(Sync::ConditionVariable)
       Sync::ConditionVariable.unsafe_construct(pointerof(@senders), @mutex.to_reference)
 
+      @headers = HTTP::Headers.new
+
       @data = uninitialized Data
       @data = Data.new(self, connection.local_settings.initial_window_size)
     end
@@ -101,17 +103,12 @@ module HTTP2
     # Received HTTP headers. In a server context they are headers of the
     # received client request; in a client context they are headers of the
     # received server response.
-    def headers : HTTP::Headers
-      @headers ||= HTTP::Headers.new
-    end
+    getter headers : HTTP::Headers
 
     # Received trailing HTTP headers, or `nil` if none have been received (yet).
-    def trailers? : HTTP::Headers?
-      @trailers
-    end
+    getter? trailers : HTTP::Headers?
 
-    protected def trailers : HTTP::Headers
-      @trailers ||= HTTP::Headers.new
+    protected def trailers=(@trailers : HTTP::Headers)
     end
 
     def ==(other : Stream)
