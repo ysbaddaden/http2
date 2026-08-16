@@ -5,7 +5,7 @@ module HTTP2
     # :nodoc:
     protected def initialize(@connection : Connection, @type : Connection::Type)
       @streams = {} of Int32 => Stream
-      @mutex = Mutex.new  # OPTIMIZE: use Sync::RWLock instead
+      @lock = Sync::RWLock.new
       @highest_remote_id = 0
 
       case @type
@@ -23,7 +23,13 @@ module HTTP2
     # forward declares a stream priority/dependency but doesn't consume the
     # stream identifiers, so they are still valid.
     def find(id : Int32, consume : Bool = true) : Stream
-      @mutex.synchronize do
+      if @lock.try_lock_read?
+        stream = @streams[id]?
+        @lock.unlock_read
+        return stream if stream
+      end
+
+      @lock.write do
         @streams[id] ||= begin
           if @type.peer.initiates?(id)
             if max = @connection.local_settings.max_concurrent_streams
@@ -41,7 +47,7 @@ module HTTP2
     end
 
     protected def each(&)
-      @mutex.synchronize do
+      @lock.read do
         @streams.each { |_, stream| yield stream }
       end
     end
@@ -51,7 +57,7 @@ module HTTP2
     protected def valid?(stream_id : Int32)
       stream_id == 0 || (                                # stream #0 is always valid, or
         @type.peer.initiates?(stream_id) && (            # peer owns the stream_id, and
-          @mutex.synchronize { @streams[stream_id]? } || # stream already exists, or
+          @lock.read { @streams[stream_id]? } || # stream already exists, or
           stream_id >= @highest_remote_id                # stream id grows (can't shrink)
         )
       )
@@ -60,7 +66,7 @@ module HTTP2
     # Creates an outgoing stream. For example to handle a client request or a
     # server push.
     def create(state = Stream::State::IDLE) : Stream
-      @mutex.synchronize do
+      @lock.write do
         if max = @connection.remote_settings.max_concurrent_streams
           if unsafe_active_count(@type) >= max
             raise Error.refused_stream("MAXIMUM outgoing stream capacity reached")
@@ -79,7 +85,9 @@ module HTTP2
     # incoming = active_count(@type.peer)
     # ```
     protected def active_count(type : Connection::Type) : Int32
-      @mutex.synchronize { unsafe_active_count(type) }
+      @lock.read do
+        unsafe_active_count(type)
+      end
     end
 
     private def unsafe_active_count(type : Connection::Type) : Int32
@@ -93,7 +101,7 @@ module HTTP2
     end
 
     protected def last_stream_id : Int32
-      @mutex.synchronize do
+      @lock.read do
         @streams.reduce(0) { |a, (k, _)| a > k ? a : k }
       end
     end

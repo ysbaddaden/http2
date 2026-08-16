@@ -1,4 +1,6 @@
 require "http/headers"
+require "sync/condition_variable"
+require "sync/mutex"
 require "./data"
 
 module HTTP2
@@ -55,11 +57,23 @@ module HTTP2
     getter state : State
     property priority : Priority
     private getter connection : Connection
-    protected getter outbound_window_size : Int32
+
+    @outbound_window_size : Int32
 
     # :nodoc:
     protected def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state = State::IDLE)
       @outbound_window_size = connection.remote_settings.initial_window_size
+
+      @mutex = uninitialized ReferenceStorage(Sync::Mutex)
+      Sync::Mutex.unsafe_construct(pointerof(@mutex))
+
+      @senders = uninitialized ReferenceStorage(Sync::ConditionVariable)
+      Sync::ConditionVariable.unsafe_construct(pointerof(@senders), @mutex.to_reference)
+
+      @headers = HTTP::Headers.new
+
+      @data = uninitialized Data
+      @data = Data.new(self, connection.local_settings.initial_window_size)
     end
 
     # Returns true if the stream is in an active `#state`, that is OPEN or
@@ -84,24 +98,17 @@ module HTTP2
     # connected peer sends more DATA frames.
     #
     # See `Data` for more details.
-    def data : Data
-      @data ||= Data.new(self, connection.local_settings.initial_window_size)
-    end
+    getter data : Data
 
     # Received HTTP headers. In a server context they are headers of the
     # received client request; in a client context they are headers of the
     # received server response.
-    def headers : HTTP::Headers
-      @headers ||= HTTP::Headers.new
-    end
+    getter headers : HTTP::Headers
 
     # Received trailing HTTP headers, or `nil` if none have been received (yet).
-    def trailers? : HTTP::Headers?
-      @trailers
-    end
+    getter? trailers : HTTP::Headers?
 
-    protected def trailers : HTTP::Headers
-      @trailers ||= HTTP::Headers.new
+    protected def trailers=(@trailers : HTTP::Headers)
     end
 
     def ==(other : Stream)
@@ -112,17 +119,22 @@ module HTTP2
       false
     end
 
-    protected def increment_outbound_window_size(increment) : Nil
-      if @outbound_window_size.to_i64 + increment > MAXIMUM_WINDOW_SIZE
-        send_rst_stream(Error::Code::FLOW_CONTROL_ERROR)
-        return
+    protected def resume_senders : Nil
+      @mutex.to_reference.synchronize do
+        @senders.to_reference.broadcast
       end
-      @outbound_window_size += increment
-      resume_writeable
     end
 
-    protected def consume_outbound_window_size(size)
-      @outbound_window_size -= size
+    protected def increment_outbound_window_size(increment : Int32) : Nil
+      @mutex.to_reference.synchronize do
+        size = @outbound_window_size.to_i64 + increment
+        if size <= MAXIMUM_WINDOW_SIZE
+          @outbound_window_size = size.to_i32
+          @senders.to_reference.broadcast
+          return
+        end
+      end
+      send_rst_stream(Error::Code::FLOW_CONTROL_ERROR)
     end
 
     protected def send_window_update_frame(increment)
@@ -243,51 +255,33 @@ module HTTP2
 
       frame = Frame.new(Frame::Type::DATA, self, flags)
 
-      if data.size == 0
+      if data.empty?
         connection.send(frame)
         return
       end
 
-      until data.size == 0
-        if @outbound_window_size < 1 || connection.outbound_window_size < 1
-          wait_writeable
-        end
+      until data.empty?
+        size = 0
 
-        size = {data.size, @outbound_window_size, connection.remote_settings.max_frame_size}.min
-        if size > 0
-          actual = connection.consume_outbound_window_size(size)
-
-          if actual > 0
-            frame.payload = data[0, actual]
-
-            consume_outbound_window_size(actual)
-            data += actual
-
-            frame.flags |= Frame::Flags::END_STREAM if data.size == 0 && end_stream
-            connection.send(frame)
+        @mutex.to_reference.synchronize do
+          while @outbound_window_size < 1 || connection.outbound_window_size < 1
+            @senders.to_reference.wait
           end
+
+          size = {data.size, @outbound_window_size, connection.remote_settings.max_frame_size}.min
+          next if size == 0
+
+          size = connection.consume_outbound_window_size(size)
+          next if size == 0
+
+          @outbound_window_size -= size
         end
 
-        # allow other fibers to do their job (e.g. let the connection send or
-        # receive frames, let other streams send data, ...)
-        Fiber.yield
-      end
-    end
+        frame.payload = data[0, size]
+        data += size
 
-    # Block current fiber until the stream can send data. I.e. it's window size
-    # or the connection window size have been increased.
-    private def wait_writeable
-      @fiber = Fiber.current
-      Crystal::Scheduler.reschedule
-    ensure
-      @fiber = nil
-    end
-
-    # Resume a previously paused fiber waiting to send data, if any.
-    protected def resume_writeable
-      if (fiber = @fiber) && @outbound_window_size > 0
-        Crystal::Scheduler.enqueue(Fiber.current)
-        fiber.resume
+        frame.flags |= Frame::Flags::END_STREAM if data.empty? && end_stream
+        connection.send(frame)
       end
     end
 

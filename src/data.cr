@@ -1,4 +1,4 @@
-require "./io/circular_buffer"
+require "./circular_buffer"
 
 module HTTP2
   # Wraps a circular buffer to buffer incoming DATA. The buffer capacity is the
@@ -7,10 +7,10 @@ module HTTP2
   # the buffer size (incremented by half the buffer size).
   class Data < IO
     # :nodoc:
-    alias Closed = IO::CircularBuffer::Closed
+    alias Closed = CircularBuffer::Closed
 
     @stream : Stream
-    @buffer : IO::CircularBuffer?
+    @buffer = uninitialized ReferenceStorage(CircularBuffer)
     @inbound_window_size : Int32
     @size : Int32
 
@@ -18,12 +18,12 @@ module HTTP2
     protected def initialize(@stream, window_size)
       @inbound_window_size = window_size
       @size = 0
+      @buffer = uninitialized ReferenceStorage(CircularBuffer)
+      CircularBuffer.unsafe_construct(pointerof(@buffer), @inbound_window_size)
     end
 
-    # Initializes buffer on demand.
     private def buffer
-      # NOTE: thread safety (?)
-      @buffer ||= IO::CircularBuffer.new(@inbound_window_size)
+      @buffer.to_reference
     end
 
     # Reads previously buffered DATA.
@@ -64,16 +64,15 @@ module HTTP2
     end
 
     def close_read : Nil
-      buffer.close(Closed::Read) unless buffer.closed?(Closed::Read)
+      buffer.close(:read) unless buffer.closed?(:read)
     end
 
     protected def close_write : Nil
-      buffer.close(Closed::Write) unless buffer.closed?(Closed::Write)
+      buffer.close(:write) unless buffer.closed?(:write)
     end
 
     def close : Nil
-      close_read
-      close_write
+      buffer.close unless buffer.closed?
     end
 
     # Returns the collected size in bytes of streamed DATA frames.
