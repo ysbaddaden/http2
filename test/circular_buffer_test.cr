@@ -163,10 +163,10 @@ class HTTP2::CircularBufferTest < Minitest::Test
         read += count
       end
 
-      fiber.resume
+      fiber.enqueue
     end
 
-    Crystal::Scheduler.reschedule
+    Fiber.suspend
     assert_equal i, o, "error"
   end
 
@@ -199,10 +199,10 @@ class HTTP2::CircularBufferTest < Minitest::Test
         count += read
       end
 
-      fiber.resume
+      fiber.enqueue
     end
 
-    Crystal::Scheduler.reschedule
+    Fiber.suspend
     assert_equal i, o, "error"
   end
 
