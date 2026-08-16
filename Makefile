@@ -10,7 +10,7 @@ OPTS = --chaos --parallel 4
 
 bin/%: samples/%.cr src/*.cr src/**/*.cr
 	@mkdir -p bin
-	$(CRYSTAL) build -Dwithout_mt $(CRFLAGS) -o $@ $<
+	$(CRYSTAL) build $(CRFLAGS) -o $@ $<
 
 ssl: .PHONY
 	@mkdir -p ssl
@@ -18,4 +18,4 @@ ssl: .PHONY
 		-sha256 -days 3650 -nodes -subj "/C=XX/ST=X/L=X/O=X/OU=X/CN=X"
 
 test: .PHONY
-	$(CRYSTAL) run -Dwithout_mt $(CRFLAGS) $(TESTS) -- $(OPTS)
+	$(CRYSTAL) run $(CRFLAGS) $(TESTS) -- $(OPTS)
