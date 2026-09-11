@@ -6,7 +6,7 @@ require "./http_request"
 require "./http_server_context"
 require "./http_server_response"
 require "../connection"
-require "../server/http1"
+require "../http1"
 
 class HTTP::Server
   {% unless flag?(:without_openssl) %}
@@ -16,10 +16,7 @@ class HTTP::Server
     end
   {% end %}
 
-  # TODO: respect max_request_line_size
   property max_request_line_size = HTTP::MAX_REQUEST_LINE_SIZE
-
-  # TODO: respect max_headers_size
   property max_headers_size = HTTP::MAX_HEADERS_SIZE
 
   @processor = uninitialized RequestProcessor
@@ -53,10 +50,19 @@ class HTTP::Server
       end
     {% end %}
 
-    connection = HTTP::Connection.new(io)
+    connection = HTTP1::Connection.new(io)
+    connection.max_request_line_size = max_request_line_size
+    connection.max_headers_size = max_headers_size
 
-    return unless request_line = connection.read_request_line
-    method, path = request_line
+    case result = connection.read_request_line
+    in Tuple(String, String)
+      method, path = result
+    in HTTP::Status
+      bad_request(connection, result)
+      return
+    in Nil
+      return
+    end
 
     case connection.version
     when "HTTP/1.1", "HTTP/1.0"
@@ -65,7 +71,7 @@ class HTTP::Server
       if method == "PRI" && path == "*"
         handle_http2_connection(io)
       else
-        bad_request(io)
+        bad_request(connection)
       end
     else
       # protocol error: merely close the connection
@@ -93,35 +99,60 @@ class HTTP::Server
         ":path"   => path,
         ":scheme" => scheme,
       }
-      unless connection.read_headers(headers)
-        bad_request(connection.io)
-        break
+      if status = connection.read_fields(headers)
+        bad_request(connection, status)
+        return
       end
 
-      content = connection.content(headers)
+      content = connection.content(headers) do |status|
+        bad_request(connection, status)
+        return
+      end
+
       body = decode_body(content, headers)
       request = HTTP::Request.new(headers, body, connection.version)
 
       if settings = http2_upgrade_request?(headers)
-        connection.http2_upgrade("h2c")
+        connection.http_upgrade("h2c")
         handle_http2_connection(connection.io, request, Base64.decode(settings), alpn: "h2c")
-        break
+        return
       end
 
-      response = HTTP::Server::Response.new(connection)
+      response = HTTP::Server::Response.new(connection, method)
       response.headers["connection"] = "keep-alive" if request.keep_alive?
 
       context = HTTP::Server::Context.new(request, response)
       handle_request(context)
 
-      break if response.headers["connection"] == "Upgrade"
-      break unless request.keep_alive?
+      return if connection.faulty?
+      return if response.headers["connection"]? == "Upgrade"
+      return unless request.keep_alive?
 
       case content
       when HTTP::FixedLengthContent
-        break if content.read_remaining > 0
+        return if content.read_remaining > 0
       when HTTP::ChunkedContent
-        break unless content.closed?
+        return unless content.closed?
+      end
+
+      # try followup request
+
+      case result = connection.read_request_line
+      in Tuple(String, String)
+        method, path = result
+      in HTTP::Status
+        bad_request(connection, result)
+        return
+      in Nil
+        return
+      end
+
+      case connection.version
+      when "HTTP/1.1", "HTTP/1.0"
+        # continue
+      else
+        # protocol error: merely close the connection
+        return
       end
     end
   end
@@ -164,8 +195,10 @@ class HTTP::Server
 
       case frame.type
       when HTTP2::Frame::Type::HEADERS
-        # don't dispatch twice
-        next if frame.stream.trailers?
+        if frame.stream.trailers?
+          # don't dispatch twice
+          next
+        end
         context = context_for(frame.stream)
         spawn handle_request(context.as(Context))
       when HTTP2::Frame::Type::PUSH_PROMISE
@@ -199,11 +232,7 @@ class HTTP::Server
   private def handle_request(context : Context)
     @handler.call(context)
   ensure
-    begin
-      context.response.close
-    rescue ex : HTTP2::Error | IO::Error
-      # silence
-    end
+    context.response.close
   end
 
   private def decode_body(body, headers)
@@ -245,8 +274,10 @@ class HTTP::Server
     body.set_encoding(charset, invalid: :skip)
   end
 
-  private def bad_request(io) : Nil
-    io << "HTTP/1.1 400 BAD REQUEST\r\nConnection: close\r\n\r\n"
+  private def bad_request(connection, status = HTTP::Status::BAD_REQUEST) : Nil
+    connection.send_headers HTTP::Headers{
+      ":status" => status.code.to_s,
+      "connection" => "close",
+    }
   end
-
 end
