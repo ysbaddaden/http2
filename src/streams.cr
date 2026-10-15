@@ -1,4 +1,5 @@
 require "./stream"
+require "sync/rw_lock"
 
 module HTTP2
   class Streams
