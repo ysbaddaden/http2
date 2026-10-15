@@ -1,4 +1,4 @@
-require "http/headers"
+require "./core_ext/http_headers"
 require "sync/condition_variable"
 require "sync/mutex"
 require "./data"

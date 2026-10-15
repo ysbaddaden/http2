@@ -1,4 +1,4 @@
-require "http/headers"
+require "../core_ext/http_headers"
 require "./huffman"
 require "./static_table"
 require "./dynamic_table"
