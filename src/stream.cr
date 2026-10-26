@@ -116,6 +116,10 @@ module HTTP2
     # the closed stream then.
     protected getter? reset_sent : Bool = false
 
+    # Returns true if we sent a HEAD request on the stream: the response has
+    # no content.
+    protected getter? head_request : Bool = false
+
     def ==(other : Stream)
       id == other.id
     end
@@ -185,6 +189,7 @@ module HTTP2
     # The `Frame::Flags::END_HEADERS` flag will be automatically set on the last
     # part; hence you can't send headers multiple times.
     def send_headers(headers : HTTP::Headers, flags : Frame::Flags = Frame::Flags::None) : Nil
+      @head_request = true if headers[":method"]? == "HEAD"
       payload = connection.hpack_encoder.encode(headers)
       send_headers(Frame::Type::HEADERS, headers, flags, payload)
     end

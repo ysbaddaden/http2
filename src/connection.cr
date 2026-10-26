@@ -124,7 +124,8 @@ module HTTP2
     # ignored.
     #
     # Returns `nil` when the frame was ignored, for example DATA received on a
-    # stream after we reset it.
+    # stream after we reset it, or when it made the request or response
+    # malformed and the stream was reset.
     def receive : Frame?
       frame = read_frame_header
       stream = frame.stream
@@ -145,11 +146,11 @@ module HTTP2
       case frame.type
       when Frame::Type::DATA
         raise Error.protocol_error if stream.id == 0
-        read_data_frame(frame)
+        return unless read_data_frame(frame)
 
       when Frame::Type::HEADERS
         raise Error.protocol_error if stream.id == 0
-        read_headers_frame(frame)
+        return unless read_headers_frame(frame)
 
       when Frame::Type::PUSH_PROMISE
         raise Error.protocol_error if stream.id == 0
@@ -229,28 +230,25 @@ module HTTP2
       frame
     end
 
-    private def read_data_frame(frame)
+    private def read_data_frame(frame) : Bool
       stream = frame.stream
+      valid = true
 
       read_padded(frame) do |size|
         consume_inbound_window_size(size)
         stream.data.copy_from(io, size)
 
         if frame.flags.end_stream?
-          stream.data.close_write
-
-          if content_length = stream.headers["content-length"]?
-            unless content_length.to_i == stream.data.size
-              # stream.send_rst_stream(Error::Code::PROTOCOL_ERROR)
-              raise Error.protocol_error("MALFORMED data frame")
-            end
-          end
+          valid = close_body(stream)
         end
       end
+
+      valid
     end
 
-    private def read_headers_frame(frame)
+    private def read_headers_frame(frame) : Bool
       stream = frame.stream
+      valid = true
 
       read_padded(frame) do |size|
         if frame.flags.priority?
@@ -288,16 +286,40 @@ module HTTP2
         if stream.data? || frame.flags.end_stream?
           # https://tools.ietf.org/html/rfc7540#section-8.1
           # https://tools.ietf.org/html/rfc7230#section-4.1.2
-          stream.data.close_write
-
-          if content_length = stream.headers["content-length"]?
-            unless content_length.to_i == stream.data.size
-              # connection.send_rst_stream(Error::Code::PROTOCOL_ERROR)
-              raise Error.protocol_error("MALFORMED data frame")
-            end
-          end
+          valid = close_body(stream)
         end
       end
+
+      valid
+    end
+
+    # Closes the body once the peer ended the stream. A body whose size
+    # doesn't match the content-length header, or an invalid content-length,
+    # is malformed: resets the stream (a stream error, RFC 9113 section
+    # 8.1.1) and returns false.
+    private def close_body(stream) : Bool
+      if content_length = stream.headers["content-length"]?
+        # a response to HEAD, a 204 or a 304 has no content but may have a
+        # content-length (RFC 9113 section 8.1.1, RFC 9110 section 6.4.1)
+        bodiless_response = @type.client? && stream.data.size == 0 &&
+                            (stream.head_request? || {"204", "304"}.includes?(stream.headers[":status"]?))
+
+        length = parse_content_length(content_length)
+        unless length && (length == stream.data.size || bodiless_response)
+          stream.send_rst_stream(Error::Code::PROTOCOL_ERROR)
+          stream.abort
+          return false
+        end
+      end
+
+      stream.data.close_write
+      true
+    end
+
+    # Parses a content-length value: digits only (RFC 9110 section 8.6).
+    # Returns nil if the value is invalid or too large.
+    private def parse_content_length(value : String) : UInt64?
+      value.to_u64?(whitespace: false) if value.each_char.all?(&.ascii_number?)
     end
 
     # Ignores a DATA frame received on a stream we reset, that the peer sent

@@ -437,6 +437,111 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Error::Code::STREAM_CLOSED, error.code
   end
 
+  def test_client_accepts_response_to_head_request_with_content_length
+    stream, connection, _ = bodiless_response("HEAD", "200")
+
+    frame = connection.receive.not_nil!
+    assert_same stream, frame.stream
+    assert_equal "1000", stream.headers["content-length"]
+    assert_empty stream.data.gets_to_end
+  end
+
+  def test_client_accepts_not_modified_response_with_content_length
+    stream, connection, _ = bodiless_response("GET", "304")
+
+    frame = connection.receive.not_nil!
+    assert_same stream, frame.stream
+    assert_empty stream.data.gets_to_end
+  end
+
+  def test_client_resets_stream_on_content_length_and_no_body
+    stream, connection, output = bodiless_response("GET", "200")
+
+    assert_nil connection.receive
+    assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output)
+    assert_raises(IO::Error) { stream.data.gets_to_end }
+  end
+
+  # Sends a *method* request on stream 1, whose response is HEADERS with
+  # END_STREAM, *status* and `content-length: 1000`, without DATA.
+  private def bodiless_response(method, status)
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => status, "content-length" => "1000"}))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create
+    stream.send_headers(HTTP::Headers{
+      ":method"    => method,
+      ":scheme"    => "http",
+      ":authority" => "example.com",
+      ":path"      => "/",
+    }, Frame::Flags::END_STREAM)
+    {stream, connection, output}
+  end
+
+  def test_content_length_mismatch_resets_the_stream
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200", "content-length" => "10"}))
+    write_frame(input, Frame::Type::DATA, Frame::Flags::END_STREAM, 1, "hello".to_slice)
+    write_frame(input, Frame::Type::PING, Frame::Flags::None, 0, Bytes.new(8))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+
+    assert_nil connection.receive
+    assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output)
+    assert_raises(IO::Error) { stream.data.gets_to_end }
+
+    # a stream error: the connection goes on
+    assert_equal Frame::Type::PING, connection.receive.not_nil!.type
+  end
+
+  def test_invalid_content_length_resets_the_stream
+    # not digits only, or too large (RFC 9110 section 8.6)
+    {"abc", "+5", "5 ", "99999999999999999999"}.each do |content_length|
+      input = IO::Memory.new
+      write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+        HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200", "content-length" => content_length}))
+      write_frame(input, Frame::Type::DATA, Frame::Flags::END_STREAM, 1, "hello".to_slice)
+      write_frame(input, Frame::Type::PING, Frame::Flags::None, 0, Bytes.new(8))
+      input.rewind
+      output = IO::Memory.new
+      connection = Connection.new(IO::Stapled.new(input, output), :client)
+      stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+      connection.receive
+
+      assert_nil connection.receive, "content-length: #{content_length.inspect}"
+      assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output)
+      assert_raises(IO::Error) { stream.data.gets_to_end }
+
+      # a stream error: the connection goes on
+      assert_equal Frame::Type::PING, connection.receive.not_nil!.type
+    end
+  end
+
+  def test_server_resets_request_stream_on_content_length_mismatch
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{
+        ":method"        => "POST",
+        ":scheme"        => "http",
+        ":authority"     => "example.com",
+        ":path"          => "/",
+        "content-length" => "5",
+      }))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :server)
+
+    assert_nil connection.receive
+    assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output)
+  end
+
   def test_ignores_frames_in_flight_after_resetting_many_streams
     input = IO::Memory.new
     write_frame(input, Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 3, 0, 0, 0x05, 0xdc]) # max_concurrent_streams=1500
@@ -711,6 +816,24 @@ class HTTP2::ConnectionTest < Minitest::Test
       end
     end
     updates
+  end
+
+  # Parses the RST_STREAM frames written to *io* as {stream_id, error_code}.
+  private def reset_streams(io : IO::Memory)
+    io.rewind
+    resets = [] of {Int32, Error::Code}
+    while io.pos < io.size
+      header = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+      size, type = header >> 8, header & 0xff
+      io.skip(1) # flags
+      stream_id = io.read_bytes(UInt32, IO::ByteFormat::BigEndian).to_i32 & 0x7fffffff
+      if type == Frame::Type::RST_STREAM.value
+        resets << {stream_id, Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))}
+      else
+        io.skip(size)
+      end
+    end
+    resets
   end
 
   # Parses the GOAWAY frames written to *io* as {last_stream_id, error_code}.
