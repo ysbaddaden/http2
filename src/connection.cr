@@ -379,7 +379,8 @@ module HTTP2
         # special colon (:) headers MUST come before the regular headers
         regular ||= !name.starts_with?(':')
 
-        if (name.starts_with?(':') && (regular || !pseudo.includes?(name))) || ("A".."Z").covers?(name)
+        # field names must be lowercase (RFC 9113 section 8.2.1)
+        if (name.starts_with?(':') && (regular || !pseudo.includes?(name))) || name.each_char.any?(&.ascii_uppercase?)
           raise Error.protocol_error("MALFORMED #{name} header")
         end
 

@@ -113,6 +113,39 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Error::Code::REFUSED_STREAM, error.code
   end
 
+  def test_rejects_uppercase_header_names
+    {"X-Custom", "x-Custom", "x-customX"}.each do |name|
+      payload = IO::Memory.new
+      payload.write(HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{
+        ":method"    => "GET",
+        ":scheme"    => "http",
+        ":authority" => "example.com",
+        ":path"      => "/",
+      }))
+      # literal header field without indexing, new name (the encoder would
+      # lowercase the name)
+      payload.write_byte(0_u8)
+      payload.write_byte(name.bytesize.to_u8)
+      payload << name
+      payload.write_byte(5_u8)
+      payload << "value"
+      connection = new_connection(:server, {
+        Frame::Type::HEADERS,
+        Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM,
+        1,
+        payload.to_slice,
+      })
+
+      error = begin
+        connection.receive
+        nil
+      rescue ex : Error
+        ex
+      end
+      assert_equal Error::Code::PROTOCOL_ERROR, error.try(&.code), "#{name} header"
+    end
+  end
+
   def test_client_accepts_frames_on_streams_it_opened
     headers_frame = {
       Frame::Type::HEADERS,
