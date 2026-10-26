@@ -137,4 +137,36 @@ class HTTP2::ConnectionTest < Minitest::Test
     frame = connection.receive.not_nil!
     assert_equal Stream::State::HALF_CLOSED_REMOTE, frame.stream.state
   end
+
+  def test_client_sends_connection_window_update
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}))
+    3.times { write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(16384)) }
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    4.times { connection.receive }
+    assert_equal [{0, DEFAULT_INITIAL_WINDOW_SIZE}], window_updates(output)
+  end
+
+  # Parses the WINDOW_UPDATE frames written to *io* as {stream_id, increment}.
+  private def window_updates(io : IO::Memory)
+    io.rewind
+    updates = [] of {Int32, Int32}
+    while io.pos < io.size
+      header = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+      size, type = header >> 8, header & 0xff
+      io.skip(1) # flags
+      stream_id = io.read_bytes(UInt32, IO::ByteFormat::BigEndian).to_i32 & 0x7fffffff
+      if type == Frame::Type::WINDOW_UPDATE.value
+        updates << {stream_id, io.read_bytes(UInt32, IO::ByteFormat::BigEndian).to_i32 & 0x7fffffff}
+      else
+        io.skip(size)
+      end
+    end
+    updates
+  end
 end
