@@ -63,6 +63,11 @@ module HTTP2
       buffer.copy_from(io, size)
     end
 
+    # Returns true once the whole body was received (END_STREAM).
+    protected def complete? : Bool
+      buffer.closed?(:write)
+    end
+
     def close_read : Nil
       buffer.close(:read) unless buffer.closed?(:read)
     end

@@ -152,6 +152,79 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal [{0, DEFAULT_INITIAL_WINDOW_SIZE}], window_updates(output)
   end
 
+  def test_received_rst_stream_releases_body_reader
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS,
+      1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}),
+    }
+    reset_stream_frame = {Frame::Type::RST_STREAM, Frame::Flags::None, 1, Bytes[0, 0, 0, 8]} # CANCEL
+    connection = new_connection(:client, headers_frame, reset_stream_frame)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+
+    result = Channel(String | Exception).new(1)
+    spawn do
+      result.send(stream.data.gets_to_end)
+    rescue ex
+      result.send(ex)
+    end
+    Fiber.yield # let the reader block on the empty body
+
+    connection.receive
+
+    select
+    when value = result.receive
+      assert_instance_of IO::Error, value
+    when timeout(1.second)
+      flunk "body reader is still blocked after RST_STREAM"
+    end
+  end
+
+  def test_received_rst_stream_keeps_complete_body
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS,
+      1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}),
+    }
+    data_frame = {Frame::Type::DATA, Frame::Flags::END_STREAM, 1, "hello".to_slice}
+    reset_stream_frame = {Frame::Type::RST_STREAM, Frame::Flags::None, 1, Bytes[0, 0, 0, 0]} # NO_ERROR
+    connection = new_connection(:client, headers_frame, data_frame, reset_stream_frame)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    3.times { connection.receive }
+    assert_equal "hello", stream.data.gets_to_end
+  end
+
+  def test_received_rst_stream_releases_blocked_sender
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::RST_STREAM, Frame::Flags::None, 1, Bytes[0, 0, 0, 8]) # CANCEL
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    stream = connection.streams.create(state: Stream::State::OPEN)
+
+    result = Channel(Exception?).new(1)
+    spawn do
+      # one byte more than the stream window: blocks until a WINDOW_UPDATE
+      stream.send_data(Bytes.new(DEFAULT_INITIAL_WINDOW_SIZE + 1))
+      result.send(nil)
+    rescue ex
+      result.send(ex)
+    end
+    Fiber.yield # let the sender block on the exhausted window
+
+    connection.receive
+
+    select
+    when value = result.receive
+      assert_instance_of Error, value
+    when timeout(1.second)
+      flunk "sender is still blocked after RST_STREAM"
+    end
+  end
+
   # Parses the WINDOW_UPDATE frames written to *io* as {stream_id, increment}.
   private def window_updates(io : IO::Memory)
     io.rewind

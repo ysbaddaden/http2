@@ -388,6 +388,7 @@ module HTTP2
       error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
       frame.error = error_code
       Log.trace { "  code=#{error_code.to_s}" }
+      frame.stream.abort
     end
 
     private def read_settings_frame(frame)

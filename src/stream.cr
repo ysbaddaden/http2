@@ -125,6 +125,16 @@ module HTTP2
       end
     end
 
+    # Releases the fibers waiting on the stream after it got closed abruptly,
+    # for example reset by the peer: closes the body unless it was received in
+    # full (a peer may reset a stream with NO_ERROR after a complete message,
+    # see RFC 9113 section 8.1) and resumes the senders waiting for a window
+    # update, so they fail.
+    protected def abort : Nil
+      data.close unless data.complete?
+      resume_senders
+    end
+
     protected def increment_outbound_window_size(increment : Int32) : Nil
       @mutex.to_reference.synchronize do
         size = @outbound_window_size.to_i64 + increment
@@ -265,6 +275,7 @@ module HTTP2
 
         @mutex.to_reference.synchronize do
           while @outbound_window_size < 1 || connection.outbound_window_size < 1
+            error! if state.closed?
             @senders.to_reference.wait
           end
 
