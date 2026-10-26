@@ -3,8 +3,9 @@ require "./circular_buffer"
 module HTTP2
   # Wraps a circular buffer to buffer incoming DATA. The buffer capacity is the
   # initial window size. The stream window size decreases whenever reading and a
-  # WINDOW_UPDATE frame will be sent whenever the window size falls below half
-  # the buffer size (incremented by half the buffer size).
+  # WINDOW_UPDATE frame will be sent whenever the window size falls to half the
+  # buffer size or the buffer was emptied (incremented by the size that was
+  # read).
   class Data < IO
     # :nodoc:
     alias Closed = CircularBuffer::Closed
@@ -28,21 +29,18 @@ module HTTP2
 
     # Reads previously buffered DATA.
     #
-    # If window size falls below half buffer capacity, sends a WINDOW_UPDATE
-    # frame to increment the window size by half the buffer size, which fits
-    # into the buffer's remaining space.
+    # Once half the buffer capacity was read, or the buffer is empty (the peer
+    # may be waiting for the window), sends a WINDOW_UPDATE frame to increment
+    # the window size by the size that was read, which fits into the buffer's
+    # free space, unless the whole body was received.
     def read(slice : Bytes) : Int32
       bytes_read = buffer.read(slice)
       @inbound_window_size -= bytes_read
 
-      unless bytes_read == 0
-        increment = buffer.capacity # // 2
-
-        # if @inbound_window_size <= increment
-        if @inbound_window_size <= 0
-          @inbound_window_size += increment
-          @stream.send_window_update_frame(increment)
-        end
+      if bytes_read > 0 && (@inbound_window_size <= buffer.capacity // 2 || buffer.empty?) && !complete?
+        increment = buffer.capacity - @inbound_window_size
+        @inbound_window_size += increment
+        @stream.send_window_update_frame(increment)
       end
 
       bytes_read

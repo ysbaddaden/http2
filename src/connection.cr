@@ -55,6 +55,18 @@ module HTTP2
     private getter io : IO
     getter streams : Streams
 
+    # The size of the connection flow-control window we keep for the peer to
+    # send DATA (RFC 9113 section 6.9): once less than half of it is
+    # available, the window grows by that size. Defaults to `nil`: the local
+    # initial window size for every active stream. Set it before
+    # `#write_settings` for a window larger than 65535 bytes from the start.
+    getter local_window_size : Int32?
+
+    def local_window_size=(size : Int) : Nil
+      raise Error.flow_control_error unless MINIMUM_WINDOW_SIZE <= size <= MAXIMUM_WINDOW_SIZE
+      @local_window_size = size.to_i32
+    end
+
     def initialize(@io : IO, @type : Type)
       @local_settings = DEFAULT_SETTINGS.dup
       @remote_settings = Settings.new
@@ -609,6 +621,14 @@ module HTTP2
     # established MUST use `#send_settings` instead!
     def write_settings : Nil
       write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), payload: local_settings.to_payload)
+
+      # the connection window starts at 65535 bytes whatever the settings
+      # (RFC 9113 section 6.9.2): grows it right away
+      increment = connection_window_size - @inbound_window_size
+      if increment > 0
+        @inbound_window_size += increment
+        streams.find(0).send_window_update_frame(increment)
+      end
     end
 
     # Sends a SETTINGS frame for the current `#local_settings` values.
@@ -650,20 +670,29 @@ module HTTP2
     end
 
     # Keeps the inbound window size (when receiving DATA frames). If the
-    # available size shrinks below half the initial window size, then we send a
-    # WINDOW_UPDATE frame to increment it by the initial window size * the
-    # number of active streams, respecting `MAXIMUM_WINDOW_SIZE`.
+    # available size shrinks below half the connection window size, sends a
+    # WINDOW_UPDATE frame to increment it by the connection window size,
+    # respecting `MAXIMUM_WINDOW_SIZE`.
     private def consume_inbound_window_size(size)
       @inbound_window_size -= size
-      initial_window_size = local_settings.initial_window_size
+      window_size = connection_window_size
 
-      # if @inbound_window_size <= 0
-      if @inbound_window_size < (initial_window_size // 2)
-        active_count = streams.active_count(@type) + streams.active_count(@type.peer)
-        increment = Math.min(initial_window_size * Math.max(active_count, 1), MAXIMUM_WINDOW_SIZE)
+      if @inbound_window_size < window_size // 2
+        increment = Math.min(window_size, MAXIMUM_WINDOW_SIZE.to_i64 - @inbound_window_size).to_i32
         @inbound_window_size += increment
         streams.find(0).send_window_update_frame(increment)
       end
+    end
+
+    # The connection window size: `#local_window_size`, or the local initial
+    # window size for every active stream (at least one), no more than
+    # `MAXIMUM_WINDOW_SIZE`.
+    private def connection_window_size : Int32
+      if size = @local_window_size
+        return size
+      end
+      active_count = streams.active_count(@type) + streams.active_count(@type.peer)
+      Math.min(local_settings.initial_window_size.to_i64 * Math.max(active_count, 1), MAXIMUM_WINDOW_SIZE).to_i32
     end
 
     protected def outbound_window_size

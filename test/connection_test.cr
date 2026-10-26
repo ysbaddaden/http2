@@ -317,6 +317,99 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal [{0, DEFAULT_INITIAL_WINDOW_SIZE}], window_updates(output)
   end
 
+  def test_client_sends_stream_window_update_once_half_the_window_was_read
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}))
+    3.times { write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(16384)) }
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    4.times { connection.receive }
+
+    stream.data.read_fully(Bytes.new(32767))
+    assert_empty window_updates(output).select { |(id, _)| id == 1 }
+
+    stream.data.read_fully(Bytes.new(1))
+    assert_equal [{1, 32768}], window_updates(output).select { |(id, _)| id == 1 }
+  end
+
+  def test_client_sends_stream_window_update_once_the_buffered_data_was_read
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}))
+    write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(1000))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    2.times { connection.receive }
+
+    stream.data.read_fully(Bytes.new(999))
+    assert_empty window_updates(output).select { |(id, _)| id == 1 }
+
+    # the peer may be waiting for the window
+    stream.data.read_fully(Bytes.new(1))
+    assert_equal [{1, 1000}], window_updates(output).select { |(id, _)| id == 1 }
+  end
+
+  def test_client_sends_no_stream_window_update_once_the_body_was_received
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}))
+    write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(16384))
+    write_frame(input, Frame::Type::DATA, Frame::Flags::END_STREAM, 1, Bytes.new(16384))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    3.times { connection.receive }
+
+    assert_equal 32768, stream.data.gets_to_end.bytesize
+    assert_empty window_updates(output).select { |(id, _)| id == 1 }
+  end
+
+  def test_client_sends_initial_connection_window_update_for_large_window
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(IO::Memory.new, output), :client)
+    connection.local_settings.initial_window_size = 1 << 20
+    connection.write_settings
+
+    assert_equal [{0, (1 << 20) - DEFAULT_INITIAL_WINDOW_SIZE}], window_updates(output)
+  end
+
+  def test_connection_window_size_is_configurable
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}))
+    3.times { write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(16384)) }
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    connection.local_window_size = 16 << 20
+    connection.write_settings
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    4.times { connection.receive }
+
+    assert_equal [{0, (16 << 20) - DEFAULT_INITIAL_WINDOW_SIZE}], window_updates(output)
+  end
+
+  def test_connection_window_update_never_exceeds_maximum_window_size
+    input = IO::Memory.new
+    2.times { write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(16384)) }
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    2.times { connection.streams.create(state: Stream::State::OPEN) }
+    # set once the streams exist, so their body buffers keep the default size
+    connection.local_settings.initial_window_size = 1 << 30
+    2.times { connection.receive }
+
+    # the window grows to the maximum, not by twice the initial window size
+    assert_equal [{0, MAXIMUM_WINDOW_SIZE - (DEFAULT_INITIAL_WINDOW_SIZE - 16384)}], window_updates(output)
+  end
+
   def test_received_rst_stream_releases_body_reader
     headers_frame = {
       Frame::Type::HEADERS,
