@@ -658,7 +658,7 @@ module HTTP2
       frames.each_with_index { |frame, i| write(frame, flush: i == frames.size - 1) }
     end
 
-    private def write(frame : Frame, flush = true)
+    private def write(frame : Frame, flush = true) : Nil
       raise IO::Error.new("Closed stream") if @write_failed
 
       size = frame.payload?.try(&.size.to_u32) || 0_u32

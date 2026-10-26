@@ -23,9 +23,9 @@ class HTTP::Server
   # TODO: respect max_headers_size
   property max_headers_size = HTTP::MAX_HEADERS_SIZE
 
-  @processor = uninitialized RequestProcessor
-
   def initialize(@handler : HTTP::Handler | HTTP::Handler::HandlerProc)
+    # `#handle_client` doesn't use the processor, but `#close` closes it
+    @processor = RequestProcessor.new(@handler)
   end
 
   {% begin %}
