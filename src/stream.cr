@@ -126,11 +126,13 @@ module HTTP2
     end
 
     # Releases the fibers waiting on the stream after it got closed abruptly,
-    # for example reset by the peer: closes the body unless it was received in
-    # full (a peer may reset a stream with NO_ERROR after a complete message,
-    # see RFC 9113 section 8.1) and resumes the senders waiting for a window
-    # update, so they fail.
+    # for example reset by the peer or the connection closed: marks the stream
+    # as closed, closes the body unless it was received in full (a peer may
+    # reset a stream with NO_ERROR after a complete message, see RFC 9113
+    # section 8.1) and resumes the senders waiting for a window update, so
+    # they fail.
     protected def abort : Nil
+      self.state = State::CLOSED unless state.closed?
       data.close unless data.complete?
       resume_senders
     end

@@ -63,6 +63,7 @@ module HTTP2
       Sync::Mutex.unsafe_construct(pointerof(@mutex), Sync::Type::Unchecked)
 
       @closed = false
+      @write_failed = false
 
       @hpack_encoder = HPACK::Encoder.new(
         max_table_size: local_settings.header_table_size,
@@ -441,7 +442,9 @@ module HTTP2
       io.read_fully(buffer)
       error_message = String.new(buffer)
 
-      close(notify: false)
+      # the peer won't accept new streams, but active streams may still
+      # complete (RFC 9113 section 6.8)
+      @mutex.to_reference.synchronize { @closed = true }
       Log.trace { "  code=#{error_code.to_s}" }
 
       unless error_code == Error::Code::NO_ERROR
@@ -487,10 +490,13 @@ module HTTP2
         in Frame
           write(frame)
         in Array(Frame)
-          frame.each { |f| write(f, flush: false) }
-          io.flush
+          frame.each_with_index { |f, i| write(f, flush: i == frame.size - 1) }
         end
       end
+    rescue ex
+      # a partial frame may be on the wire: the connection is unusable
+      close(notify: false) if @write_failed
+      raise ex
     end
 
     # Immediately writes local settings to the connection.
@@ -508,22 +514,31 @@ module HTTP2
     end
 
     private def write(frame : Frame, flush = true)
+      raise IO::Error.new("Closed stream") if @write_failed
+
       size = frame.payload?.try(&.size.to_u32) || 0_u32
       stream = frame.stream
 
       Log.trace { "send #{frame.debug(color: :light_magenta)}" }
       stream.sending(frame) unless frame.type == Frame::Type::PUSH_PROMISE
 
-      io.write_bytes((size << 8) | frame.type.to_u8, IO::ByteFormat::BigEndian)
-      io.write_byte(frame.flags.to_u8)
-      io.write_bytes(stream.id.to_u32, IO::ByteFormat::BigEndian)
+      begin
+        io.write_bytes((size << 8) | frame.type.to_u8, IO::ByteFormat::BigEndian)
+        io.write_byte(frame.flags.to_u8)
+        io.write_bytes(stream.id.to_u32, IO::ByteFormat::BigEndian)
 
-      if (payload = frame.payload?) && (payload.size > 0)
-        io.write(payload)
-      end
+        if (payload = frame.payload?) && (payload.size > 0)
+          io.write(payload)
+        end
 
-      if flush
-        io.flush
+        if flush
+          io.flush
+        end
+      rescue ex
+        # we can't tell how much of the frame was written: nothing may be
+        # written anymore
+        @write_failed = true
+        raise ex
       end
     end
 
@@ -578,10 +593,13 @@ module HTTP2
     # `Error::Code` optional message if present to report an error, or
     # `Error::Code::NO_ERROR` to terminate the connection cleanly.
     #
+    # Closes every stream: pending and further reads of a body that wasn't
+    # received in full raise, as do pending and further sends. Call it once
+    # `#receive` raised, so the streams don't wait for frames that will never
+    # come.
+    #
     # NOTE: doesn't close the IO, only the HTTP/2 connection.
     def close(error : Error? = nil, notify : Bool = true)
-      return if closed?
-
       @mutex.to_reference.synchronize do
         unless closed?
           @closed = true
@@ -602,8 +620,12 @@ module HTTP2
           end
         end
       end
-    rescue IO::Error
-      # silence
+    rescue ex
+      # the connection is closing: an error writing the GOAWAY frame, an
+      # IO::Error or not (e.g. OpenSSL::SSL::Error), mustn't stop it
+      Log.trace { "GOAWAY not sent: #{ex.message}" }
+    ensure
+      streams.each { |stream| stream.abort unless stream.id == 0 }
     end
 
     def closed?

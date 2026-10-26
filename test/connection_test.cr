@@ -225,6 +225,190 @@ class HTTP2::ConnectionTest < Minitest::Test
     end
   end
 
+  def test_close_releases_body_reader
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS,
+      1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}),
+    }
+    connection = new_connection(:client, headers_frame)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+
+    result = Channel(String | Exception).new(1)
+    spawn do
+      result.send(stream.data.gets_to_end)
+    rescue ex
+      result.send(ex)
+    end
+    Fiber.yield # let the reader block on the empty body
+
+    connection.close
+
+    select
+    when value = result.receive
+      assert_instance_of IO::Error, value
+    when timeout(1.second)
+      flunk "body reader is still blocked after the connection was closed"
+    end
+    assert_equal Stream::State::CLOSED, stream.state
+  end
+
+  def test_close_releases_blocked_sender
+    connection = Connection.new(IO::Stapled.new(IO::Memory.new, IO::Memory.new), :client)
+    stream = connection.streams.create(state: Stream::State::OPEN)
+
+    result = Channel(Exception?).new(1)
+    spawn do
+      # one byte more than the stream window: blocks until a WINDOW_UPDATE
+      stream.send_data(Bytes.new(DEFAULT_INITIAL_WINDOW_SIZE + 1))
+      result.send(nil)
+    rescue ex
+      result.send(ex)
+    end
+    Fiber.yield # let the sender block on the exhausted window
+
+    connection.close
+
+    select
+    when value = result.receive
+      assert_instance_of Error, value
+    when timeout(1.second)
+      flunk "sender is still blocked after the connection was closed"
+    end
+  end
+
+  def test_close_silences_any_error_writing_goaway
+    output = RaisingWriter.new
+    connection = Connection.new(IO::Stapled.new(IO::Memory.new, output), :client)
+    stream = connection.streams.create(state: Stream::State::OPEN)
+
+    # a TLS socket raises OpenSSL::SSL::Error, which isn't an IO::Error
+    output.error = NotAnIOError.new("bad record mac")
+    connection.close
+
+    assert connection.closed?
+    assert_equal Stream::State::CLOSED, stream.state
+  end
+
+  private class NotAnIOError < Exception
+  end
+
+  # Raises *error* on every write once it's set.
+  private class RaisingWriter < IO
+    property error : Exception? = nil
+
+    def read(slice : Bytes) : Int32
+      0
+    end
+
+    def write(slice : Bytes) : Nil
+      if error = @error
+        raise error
+      end
+    end
+  end
+
+  def test_close_keeps_complete_body
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS,
+      1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}),
+    }
+    data_frame = {Frame::Type::DATA, Frame::Flags::END_STREAM, 1, "hello".to_slice}
+    connection = new_connection(:client, headers_frame, data_frame)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    2.times { connection.receive }
+
+    connection.close
+    assert_equal "hello", stream.data.gets_to_end
+  end
+
+  def test_received_goaway_lets_active_streams_complete
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS,
+      1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}),
+    }
+    goaway_frame = {Frame::Type::GOAWAY, Frame::Flags::None, 0, Bytes[0, 0, 0, 1, 0, 0, 0, 0]} # last_stream_id=1, NO_ERROR
+    data_frame = {Frame::Type::DATA, Frame::Flags::END_STREAM, 1, "hello".to_slice}
+    connection = new_connection(:client, headers_frame, goaway_frame, data_frame)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    3.times { connection.receive }
+    assert connection.closed?
+    assert_equal "hello", stream.data.gets_to_end
+  end
+
+  def test_close_after_received_goaway_releases_body_reader
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS,
+      1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}),
+    }
+    goaway_frame = {Frame::Type::GOAWAY, Frame::Flags::None, 0, Bytes[0, 0, 0, 1, 0, 0, 0, 0]} # last_stream_id=1, NO_ERROR
+    connection = new_connection(:client, headers_frame, goaway_frame)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    2.times { connection.receive }
+
+    result = Channel(String | Exception).new(1)
+    spawn do
+      result.send(stream.data.gets_to_end)
+    rescue ex
+      result.send(ex)
+    end
+    Fiber.yield # let the reader block on the empty body
+
+    # e.g. the peer closed the socket before the stream completed
+    connection.close
+
+    select
+    when value = result.receive
+      assert_instance_of IO::Error, value
+    when timeout(1.second)
+      flunk "body reader is still blocked after the connection was closed"
+    end
+  end
+
+  def test_write_failure_closes_connection
+    output = FailingWriter.new
+    connection = Connection.new(IO::Stapled.new(IO::Memory.new, output), :client)
+    stream = connection.streams.create(state: Stream::State::OPEN)
+
+    output.fail_next_payload = true
+    assert_raises(IO::Error) { stream.send_data(Bytes.new(100)) }
+    assert connection.closed?
+    assert_equal Stream::State::CLOSED, stream.state
+
+    # the frame header is on the wire without its payload: nothing else may
+    # follow, even though the IO would accept writes again
+    written = output.bytesize
+    assert_raises(IO::Error) { connection.send_settings }
+    assert_equal written, output.bytesize
+  end
+
+  # Fails the next write of a frame payload when armed, once.
+  private class FailingWriter < IO
+    property? fail_next_payload = false
+    getter bytesize = 0
+
+    def read(slice : Bytes) : Int32
+      0
+    end
+
+    def write(slice : Bytes) : Nil
+      if fail_next_payload? && slice.size > 9 # larger than any header field write
+        @fail_next_payload = false
+        raise IO::Error.new("write failed")
+      end
+      @bytesize += slice.size
+    end
+  end
+
   # Parses the WINDOW_UPDATE frames written to *io* as {stream_id, increment}.
   private def window_updates(io : IO::Memory)
     io.rewind
