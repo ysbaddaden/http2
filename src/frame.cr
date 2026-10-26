@@ -58,9 +58,13 @@ module HTTP2
 
     getter! payload : Bytes
 
-    # The error code received by a RST_STREAM frame.
+    # The error code received by a RST_STREAM or GOAWAY frame.
     getter error : Error::Code = :NO_ERROR
     protected setter error : Error::Code
+
+    # The last stream identifier received by a GOAWAY frame.
+    getter last_stream_id : Int32 = 0
+    protected setter last_stream_id : Int32
 
     @size : Int32?
 

@@ -158,6 +158,8 @@ class HTTP::Server
       spawn handle_request(context.as(Context))
     end
 
+    goaway = false
+
     loop do
       unless frame = connection.receive
         next
@@ -172,8 +174,12 @@ class HTTP::Server
       when HTTP2::Frame::Type::PUSH_PROMISE
         raise HTTP2::Error.protocol_error("Unexpected PUSH_PROMISE frame")
       when HTTP2::Frame::Type::GOAWAY
-        break
+        goaway = true
       end
+
+      # the client won't open new streams: keep serving the ones it opened,
+      # then close the connection (RFC 9113 section 6.8)
+      break if goaway && connection.streams.active_count(:client) == 0
     end
   rescue ex : HTTP2::Error
     if connection

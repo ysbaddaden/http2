@@ -710,8 +710,85 @@ class HTTP2::ConnectionTest < Minitest::Test
     stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
 
     3.times { connection.receive }
-    assert connection.closed?
     assert_equal "hello", stream.data.gets_to_end
+  end
+
+  def test_received_goaway_reports_last_stream_id_and_error_code
+    goaway_frame = {Frame::Type::GOAWAY, Frame::Flags::None, 0, Bytes[0, 0, 0, 3, 0, 0, 0, 2]} # last_stream_id=3, INTERNAL_ERROR
+    connection = new_connection(:client, goaway_frame)
+
+    frame = connection.receive.not_nil!
+    assert_equal Frame::Type::GOAWAY, frame.type
+    assert_equal 3, frame.last_stream_id
+    assert_equal Error::Code::INTERNAL_ERROR, frame.error
+  end
+
+  def test_received_goaway_closes_streams_above_last_stream_id
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}))
+    write_frame(input, Frame::Type::GOAWAY, Frame::Flags::None, 0, Bytes[0, 0, 0, 1, 0, 0, 0, 0]) # last_stream_id=1, NO_ERROR
+    write_frame(input, Frame::Type::DATA, Frame::Flags::END_STREAM, 1, "hello".to_slice)
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    stream1 = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    stream3 = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    2.times { connection.receive }
+
+    # the server didn't process stream 3: the request may be retried
+    assert_equal Stream::State::CLOSED, stream3.state
+    assert_raises(IO::Error) { stream3.data.gets_to_end }
+
+    connection.receive
+    assert_equal "hello", stream1.data.gets_to_end
+  end
+
+  def test_received_goaway_with_error_code_lets_active_streams_complete
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS,
+      1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}),
+    }
+    goaway_frame = {Frame::Type::GOAWAY, Frame::Flags::None, 0, Bytes[0, 0, 0, 1, 0, 0, 0, 0xb]} # last_stream_id=1, ENHANCE_YOUR_CALM
+    data_frame = {Frame::Type::DATA, Frame::Flags::END_STREAM, 1, "hello".to_slice}
+    connection = new_connection(:client, headers_frame, goaway_frame, data_frame)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    3.times { connection.receive }
+    assert_equal "hello", stream.data.gets_to_end
+  end
+
+  def test_received_goaway_refuses_new_streams
+    goaway_frame = {Frame::Type::GOAWAY, Frame::Flags::None, 0, Bytes[0, 0, 0, 0, 0, 0, 0, 0]} # last_stream_id=0, NO_ERROR
+    connection = new_connection(:client, goaway_frame)
+    connection.receive
+
+    error = assert_raises(Error) { connection.streams.create }
+    assert_equal Error::Code::REFUSED_STREAM, error.code
+
+    # the peer's GOAWAY doesn't close the connection: closing it does
+    refute connection.closed?
+  end
+
+  def test_rejects_goaway_on_a_stream
+    goaway_frame = {Frame::Type::GOAWAY, Frame::Flags::None, 1, Bytes[0, 0, 0, 0, 0, 0, 0, 0]}
+    connection = new_connection(:server, goaway_frame)
+
+    # RFC 9113 section 6.8
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
+
+  def test_rejects_goaway_shorter_than_8_bytes
+    # last_stream_id without an error code, then a frame that follows
+    goaway_frame = {Frame::Type::GOAWAY, Frame::Flags::None, 0, Bytes[0, 0, 0, 1]}
+    ping_frame = {Frame::Type::PING, Frame::Flags::None, 0, Bytes.new(8)}
+    connection = new_connection(:client, goaway_frame, ping_frame)
+
+    # RFC 9113 sections 4.2 and 6.8
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::FRAME_SIZE_ERROR, error.code
   end
 
   def test_close_after_received_goaway_releases_body_reader

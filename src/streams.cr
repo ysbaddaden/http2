@@ -17,6 +17,7 @@ module HTTP2
       @highest_remote_id = 0
       @reset_ids = Deque(Int32).new
       @reset_ids_set = Set(Int32).new
+      @goaway = false
 
       case @type
       in .client?
@@ -127,6 +128,7 @@ module HTTP2
     # server push.
     def create(state = Stream::State::IDLE) : Stream
       @lock.write do
+        raise Error.refused_stream("GOAWAY received") if @goaway
         if max = @connection.remote_settings.max_concurrent_streams
           if unsafe_active_count(@type) >= max
             raise Error.refused_stream("MAXIMUM outgoing stream capacity reached")
@@ -138,13 +140,22 @@ module HTTP2
       end
     end
 
+    # Refuses to create streams once the peer sent GOAWAY. Returns the streams
+    # we opened above *last_stream_id*, that the peer won't process.
+    protected def goaway(last_stream_id : Int32) : Array(Stream)
+      @lock.write do
+        @goaway = true
+        @streams.values.select { |stream| @type.initiates?(stream.id) && stream.id > last_stream_id }
+      end
+    end
+
     # Counts active streams for the connection type or its peer. For example:
     #
     # ```
     # outgoing = active_count(@type)
     # incoming = active_count(@type.peer)
     # ```
-    protected def active_count(type : Connection::Type) : Int32
+    def active_count(type : Connection::Type) : Int32
       @lock.read do
         unsafe_active_count(type)
       end

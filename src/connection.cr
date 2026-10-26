@@ -187,6 +187,7 @@ module HTTP2
         read_ping_frame(frame)
 
       when Frame::Type::GOAWAY
+        raise Error.protocol_error unless stream.id == 0
         read_goaway_frame(frame)
 
       when Frame::Type::WINDOW_UPDATE
@@ -552,21 +553,22 @@ module HTTP2
     end
 
     private def read_goaway_frame(frame)
+      # last_stream_id and the error code, then optional debug data
+      raise Error.frame_size_error unless frame.size >= 8
       _, last_stream_id = read_stream_id
       error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
 
       buffer = Bytes.new(frame.size - 8)
       io.read_fully(buffer)
-      error_message = String.new(buffer)
+      Log.trace { "  last_stream_id=#{last_stream_id} code=#{error_code.to_s} debug=#{String.new(buffer).inspect}" }
 
-      # the peer won't accept new streams, but active streams may still
-      # complete (RFC 9113 section 6.8)
-      @mutex.to_reference.synchronize { @closed = true }
-      Log.trace { "  code=#{error_code.to_s}" }
+      frame.last_stream_id = last_stream_id
+      frame.error = error_code
 
-      unless error_code == Error::Code::NO_ERROR
-        raise ClientError.new(error_code, last_stream_id, error_message)
-      end
+      # the peer won't accept new streams nor process the streams we opened
+      # above last_stream_id (they may be retried), whatever the error code,
+      # but the other streams may still complete (RFC 9113 section 6.8)
+      streams.goaway(last_stream_id).each(&.abort)
     end
 
     private def read_window_update_frame(frame)
