@@ -14,6 +14,17 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_empty frame.stream.data.gets_to_end
   end
 
+  def test_client_disables_push
+    output = IO::Memory.new
+    client = Connection.new(IO::Stapled.new(IO::Memory.new, output), :client)
+    client.write_settings
+
+    output.rewind
+    server = Connection.new(IO::Stapled.new(output, IO::Memory.new), :server)
+    server.receive
+    refute server.remote_settings.enable_push
+  end
+
   def test_saves_reset_stream_error_code_to_frame
     headers_frame = {
       Frame::Type::HEADERS,

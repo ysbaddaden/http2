@@ -40,7 +40,11 @@ module HTTP2
     end
 
     def enable_push : Bool
-      @enable_push || DEFAULT_ENABLE_PUSH
+      if (value = @enable_push).nil?
+        DEFAULT_ENABLE_PUSH
+      else
+        value
+      end
     end
 
     def enable_push=(value : Bool)
@@ -119,7 +123,7 @@ module HTTP2
       io = IO::Memory.new(size * 6)
 
       {% for name in Identifier.constants %}
-        if value = @{{ name.underscore }}
+        unless (value = @{{ name.underscore }}).nil?
           io.write_bytes(Identifier::{{ name }}.to_u16, IO::ByteFormat::BigEndian)
           if value.is_a?(Bool)
             io.write_bytes(value ? 1_u32 : 0_u32, IO::ByteFormat::BigEndian)
@@ -136,7 +140,7 @@ module HTTP2
     def size : Int32
       num = 0
       {% for name in Identifier.constants %}
-        num += 1 if @{{ name.underscore }}
+        num += 1 unless @{{ name.underscore }}.nil?
       {% end %}
       num
     end

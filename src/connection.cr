@@ -71,6 +71,8 @@ module HTTP2
 
     def initialize(@io : IO, @type : Type)
       @local_settings = DEFAULT_SETTINGS.dup
+      # the client doesn't handle server push (RFC 9113 section 8.4)
+      @local_settings.enable_push = false if @type.client?
       @remote_settings = Settings.new
 
       @mutex = uninitialized ReferenceStorage(Sync::Mutex)
