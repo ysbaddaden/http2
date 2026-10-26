@@ -542,6 +542,87 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output)
   end
 
+  def test_sends_header_block_larger_than_max_frame_size_in_continuation_frames
+    output = IO::Memory.new
+    client = Connection.new(IO::Stapled.new(IO::Memory.new, output), :client)
+    headers = HTTP::Headers{
+      ":method"    => "GET",
+      ":scheme"    => "http",
+      ":authority" => "example.com",
+      ":path"      => "/",
+      "x-large"    => "a" * 60000, # 37500 bytes once huffman encoded
+    }
+    client.streams.create.send_headers(headers, Frame::Flags::END_STREAM)
+
+    output.rewind
+    frames = [] of {Frame::Type, Frame::Flags}
+    sizes = [] of Int32
+    while output.pos < output.size
+      header = output.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+      frames << {Frame::Type.new((header & 0xff).to_i), Frame::Flags.new(output.read_byte.not_nil!)}
+      sizes << (header >> 8).to_i
+      output.skip(4 + sizes.last) # stream id, payload
+    end
+    assert_equal [
+      {Frame::Type::HEADERS, Frame::Flags::END_STREAM},
+      {Frame::Type::CONTINUATION, Frame::Flags::None},
+      {Frame::Type::CONTINUATION, Frame::Flags::END_HEADERS},
+    ], frames
+    assert_equal [16384, 16384], sizes[0, 2]
+    assert_includes 1..16384, sizes.last
+
+    output.rewind
+    server = Connection.new(output, :server)
+    frame = server.receive.not_nil!
+    assert_equal headers, frame.stream.headers
+  end
+
+  def test_sends_header_block_larger_than_max_frame_size_on_open_stream
+    output = IO::Memory.new
+    client = Connection.new(IO::Stapled.new(IO::Memory.new, output), :client)
+    headers = HTTP::Headers{
+      ":method"    => "POST",
+      ":scheme"    => "http",
+      ":authority" => "example.com",
+      ":path"      => "/",
+      "x-large"    => "a" * 30000,
+    }
+    stream = client.streams.create
+    stream.send_headers(headers)
+    assert_equal Stream::State::OPEN, stream.state
+
+    output.rewind
+    server = Connection.new(output, :server)
+    frame = server.receive.not_nil!
+    assert_equal headers, frame.stream.headers
+    assert_equal Stream::State::OPEN, frame.stream.state
+  end
+
+  def test_sends_response_header_block_larger_than_max_frame_size
+    request = HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{
+      ":method"    => "GET",
+      ":scheme"    => "http",
+      ":authority" => "example.com",
+      ":path"      => "/",
+    })
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1, request)
+    input.rewind
+    output = IO::Memory.new
+    server = Connection.new(IO::Stapled.new(input, output), :server)
+    stream = server.receive.not_nil!.stream
+
+    headers = HTTP::Headers{":status" => "204", "x-large" => "a" * 30000}
+    stream.send_headers(headers, Frame::Flags::END_STREAM)
+    assert_equal Stream::State::CLOSED, stream.state
+
+    output.rewind
+    client = Connection.new(output, :client)
+    client.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    frame = client.receive.not_nil!
+    assert_equal headers, frame.stream.headers
+  end
+
   def test_ignores_frames_in_flight_after_resetting_many_streams
     input = IO::Memory.new
     write_frame(input, Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 3, 0, 0, 0x05, 0xdc]) # max_concurrent_streams=1500

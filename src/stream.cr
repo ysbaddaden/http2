@@ -225,25 +225,25 @@ module HTTP2
       max_frame_size = connection.remote_settings.max_frame_size
 
       if payload.size <= max_frame_size
-        flags |= flags | Frame::Flags::END_HEADERS
+        flags |= Frame::Flags::END_HEADERS
         frame = Frame.new(type, self, flags, payload)
         connection.send(frame)
       else
-        num = (payload.size / max_frame_size).ceil.to_i
-        count = max_frame_size
+        # the first frame carries the flags, the CONTINUATION frames carry the
+        # rest of the header block, the last one ends it (RFC 9113 section 4.3)
+        frames = [] of Frame
         offset = 0
 
-        frames = num.times.map do |index|
-          type = Frame::Type::CONTINUATION if index > 1
-          offset = index * max_frame_size
-          if index == num
-            count = payload.size - offset
-            flags |= Frame::Flags::END_HEADERS
-          end
-          Frame.new(type, self, flags, payload[offset, count])
+        while offset < payload.size
+          count = Math.min(max_frame_size, payload.size - offset)
+          frames << Frame.new(type, self, flags, payload[offset, count])
+          type = Frame::Type::CONTINUATION
+          flags = Frame::Flags::None
+          offset += count
         end
+        frames.last.flags |= Frame::Flags::END_HEADERS
 
-        connection.send(frames.to_a)
+        connection.send(frames)
       end
     end
 
@@ -324,6 +324,9 @@ module HTTP2
     end
 
     protected def sending(frame : Frame)
+      # a CONTINUATION frame continues the header block of the HEADERS or
+      # PUSH_PROMISE frame before it, which made the transition
+      return if frame.type == Frame::Type::CONTINUATION
       transition(frame, receiving: false)
     end
 
