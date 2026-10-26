@@ -548,14 +548,30 @@ module HTTP2
     # frames, otherwise HPACK compression synchronisation could end up corrupted
     # if another HEADERS frame for another stream was sent in between.
     def send(frame : Frame | Array(Frame)) : Nil
-      @mutex.to_reference.synchronize do
-        case frame
-        in Frame
-          write(frame)
-        in Array(Frame)
-          frame.each_with_index { |f, i| write(f, flush: i == frame.size - 1) }
-        end
+      synchronize { write(frame) }
+    end
+
+    # Opens a stream and sends its HEADERS frame, possibly followed by
+    # CONTINUATION frames, at once: no other stream can be opened in between,
+    # so the stream identifiers go on the wire in increasing order (RFC 9113
+    # section 5.1.1).
+    #
+    # Raises `Error` with REFUSED_STREAM if the peer's maximum of concurrent
+    # streams is reached or the peer sent GOAWAY.
+    def open_stream(headers : HTTP::Headers, flags : Frame::Flags = Frame::Flags::None) : Stream
+      synchronize do
+        streams.create.tap { |stream| write(stream.headers_frames(headers, flags)) }
       end
+    end
+
+    # Encodes and sends a header block on *stream*, so the header blocks are
+    # sent in the order they're encoded (RFC 9113 section 4.3).
+    protected def send_headers(stream : Stream, headers : HTTP::Headers, flags : Frame::Flags) : Nil
+      synchronize { write(stream.headers_frames(headers, flags)) }
+    end
+
+    private def synchronize(&)
+      @mutex.to_reference.synchronize { yield }
     rescue ex
       # a partial frame may be on the wire: the connection is unusable
       close(notify: false) if @write_failed
@@ -574,6 +590,10 @@ module HTTP2
     # Sends a SETTINGS frame for the current `#local_settings` values.
     def send_settings : Nil
       send Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), payload: local_settings.to_payload)
+    end
+
+    private def write(frames : Array(Frame)) : Nil
+      frames.each_with_index { |frame, i| write(frame, flush: i == frames.size - 1) }
     end
 
     private def write(frame : Frame, flush = true)

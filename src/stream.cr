@@ -189,9 +189,17 @@ module HTTP2
     # The `Frame::Flags::END_HEADERS` flag will be automatically set on the last
     # part; hence you can't send headers multiple times.
     def send_headers(headers : HTTP::Headers, flags : Frame::Flags = Frame::Flags::None) : Nil
+      connection.send_headers(self, headers, flags)
+    end
+
+    # Encodes *headers* into a HEADERS frame, possibly followed by
+    # CONTINUATION frames. Must be called while holding the connection lock,
+    # until the frames are written, so the peer decodes the header blocks in
+    # the order they were encoded (RFC 9113 section 4.3).
+    protected def headers_frames(headers : HTTP::Headers, flags : Frame::Flags) : Array(Frame)
       @head_request = true if headers[":method"]? == "HEAD"
       payload = connection.hpack_encoder.encode(headers)
-      send_headers(Frame::Type::HEADERS, headers, flags, payload)
+      headers_frames(Frame::Type::HEADERS, flags, payload)
     end
 
     # Sends `HTTP::Headers` as a server-push request.
@@ -217,17 +225,16 @@ module HTTP2
         io = IO::Memory.new
         io.write_bytes(stream.id.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)
         payload = connection.hpack_encoder.encode(headers, writer: io)
-        send_headers(Frame::Type::PUSH_PROMISE, headers, flags, payload)
+        connection.send(headers_frames(Frame::Type::PUSH_PROMISE, flags, payload))
       end
     end
 
-    protected def send_headers(type : Frame::Type, headers, flags, payload) : Nil
+    private def headers_frames(type : Frame::Type, flags, payload) : Array(Frame)
       max_frame_size = connection.remote_settings.max_frame_size
 
       if payload.size <= max_frame_size
         flags |= Frame::Flags::END_HEADERS
-        frame = Frame.new(type, self, flags, payload)
-        connection.send(frame)
+        [Frame.new(type, self, flags, payload)]
       else
         # the first frame carries the flags, the CONTINUATION frames carry the
         # rest of the header block, the last one ends it (RFC 9113 section 4.3)
@@ -242,8 +249,7 @@ module HTTP2
           offset += count
         end
         frames.last.flags |= Frame::Flags::END_HEADERS
-
-        connection.send(frames)
+        frames
       end
     end
 

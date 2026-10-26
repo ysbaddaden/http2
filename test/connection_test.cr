@@ -623,6 +623,75 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal headers, frame.stream.headers
   end
 
+  def test_open_stream_sends_headers
+    output = IO::Memory.new
+    client = Connection.new(IO::Stapled.new(IO::Memory.new, output), :client)
+
+    stream1 = client.open_stream(REQUEST, Frame::Flags::END_STREAM)
+    assert_equal 1, stream1.id
+    assert_equal Stream::State::HALF_CLOSED_LOCAL, stream1.state
+
+    stream3 = client.open_stream(REQUEST)
+    assert_equal 3, stream3.id
+    assert_equal Stream::State::OPEN, stream3.state
+
+    output.rewind
+    server = Connection.new(output, :server)
+    2.times do |i|
+      frame = server.receive.not_nil!
+      assert_equal 2 * i + 1, frame.stream.id
+      assert_equal REQUEST, frame.stream.headers
+    end
+  end
+
+  def test_open_stream_sends_streams_in_order
+    output = YieldingWriter.new
+    client = Connection.new(IO::Stapled.new(IO::Memory.new, output), :client)
+    headers = REQUEST.dup.tap { |h| h["x-large"] = "a" * 30000 } # needs CONTINUATION frames
+    done = Channel(Int32 | Exception).new(10)
+
+    10.times do
+      spawn do
+        done.send(client.open_stream(headers, Frame::Flags::END_STREAM).id)
+      rescue ex
+        done.send(ex)
+      end
+    end
+    ids = Array.new(10) { done.receive.as(Int32) }
+    assert_equal (1..19).step(2).to_a, ids.sort
+
+    # increasing stream identifiers, header blocks not interleaved
+    output.rewind
+    server = Connection.new(output, :server)
+    10.times do |i|
+      frame = server.receive.not_nil!
+      assert_equal 2 * i + 1, frame.stream.id
+      assert_equal headers, frame.stream.headers
+    end
+  end
+
+  def test_client_accepts_response_to_head_request_with_content_length_on_open_stream
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200", "content-length" => "1000"}))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    stream = connection.open_stream(REQUEST.dup.tap { |h| h[":method"] = "HEAD" }, Frame::Flags::END_STREAM)
+
+    frame = connection.receive.not_nil!
+    assert_same stream, frame.stream
+    assert_empty stream.data.gets_to_end
+  end
+
+  # Yields to other fibers on every write, as a socket would when its buffer
+  # is full.
+  private class YieldingWriter < IO::Memory
+    def write(slice : Bytes) : Nil
+      Fiber.yield
+      super
+    end
+  end
+
   def test_ignores_frames_in_flight_after_resetting_many_streams
     input = IO::Memory.new
     write_frame(input, Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 3, 0, 0, 0x05, 0xdc]) # max_concurrent_streams=1500
