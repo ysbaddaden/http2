@@ -313,7 +313,11 @@ module HTTP2
       when State::IDLE
         case frame.type
         when Frame::Type::HEADERS
-          self.state = frame.flags.end_stream? ? State::HALF_CLOSED_REMOTE : State::OPEN
+          if frame.flags.end_stream?
+            self.state = receiving ? State::HALF_CLOSED_REMOTE : State::HALF_CLOSED_LOCAL
+          else
+            self.state = State::OPEN
+          end
         when Frame::Type::PUSH_PROMISE
           self.state = receiving ? State::RESERVED_REMOTE : State::RESERVED_LOCAL
         else

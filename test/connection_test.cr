@@ -108,4 +108,33 @@ class HTTP2::ConnectionTest < Minitest::Test
     error = assert_raises(Error) { connection.receive }
     assert_equal Error::Code::PROTOCOL_ERROR, error.code
   end
+
+  def test_sending_headers_frame_with_end_stream_half_closes_the_local_side
+    connection = new_connection(:client)
+    stream = connection.streams.create
+    stream.send_headers(HTTP::Headers{
+      ":method"    => "GET",
+      ":scheme"    => "http",
+      ":authority" => "example.com",
+      ":path"      => "/",
+    }, Frame::Flags::END_STREAM)
+    assert_equal Stream::State::HALF_CLOSED_LOCAL, stream.state
+  end
+
+  def test_receiving_headers_frame_with_end_stream_half_closes_the_remote_side
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM,
+      1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{
+        ":method"    => "GET",
+        ":scheme"    => "http",
+        ":authority" => "example.com",
+        ":path"      => "/",
+      }),
+    }
+    connection = new_connection(:server, headers_frame)
+    frame = connection.receive.not_nil!
+    assert_equal Stream::State::HALF_CLOSED_REMOTE, frame.stream.state
+  end
 end
