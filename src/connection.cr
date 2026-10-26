@@ -124,8 +124,8 @@ module HTTP2
     # ignored.
     #
     # Returns `nil` when the frame was ignored, for example DATA received on a
-    # stream after we reset it, or when it made the request or response
-    # malformed and the stream was reset.
+    # stream after we reset it or an interim (1xx) response on a client, or
+    # when it made the request or response malformed and the stream was reset.
     def receive : Frame?
       frame = read_frame_header
       stream = frame.stream
@@ -265,25 +265,37 @@ module HTTP2
         end
 
         buffer = read_headers_payload(frame, size)
+        interim = false
 
         begin
           if stream.data?
             hpack_decoder.decode(buffer, trailers = HTTP::Headers.new)
             stream.trailers = trailers
-          else
+          elsif @type.server?
             hpack_decoder.decode(buffer, stream.headers)
-            if @type.server?
-              validate_request_headers(stream.headers)
-            else
-              validate_response_headers(stream.headers)
-            end
+            validate_request_headers(stream.headers)
+          else
+            # interim (1xx) responses may precede the response, each in its
+            # own header block (RFC 9113 section 8.1)
+            hpack_decoder.decode(buffer, headers = HTTP::Headers.new)
+            validate_response_headers(headers)
+            interim = headers[":status"]?.try(&.starts_with?('1')) || false
+            stream.headers.merge!(headers) unless interim
           end
         rescue ex : HPACK::Error
           Log.trace { "HPACK::Error: #{ex.message}" }
           raise Error.compression_error
         end
 
-        if stream.data? || frame.flags.end_stream?
+        if interim
+          # skips the interim response; one that ends the stream is malformed
+          # (RFC 9113 section 8.1.1)
+          if frame.flags.end_stream?
+            stream.send_rst_stream(Error::Code::PROTOCOL_ERROR)
+            stream.abort
+          end
+          valid = false
+        elsif stream.data? || frame.flags.end_stream?
           # https://tools.ietf.org/html/rfc7540#section-8.1
           # https://tools.ietf.org/html/rfc7230#section-4.1.2
           valid = close_body(stream)

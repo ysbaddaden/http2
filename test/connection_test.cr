@@ -35,6 +35,42 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Error::Code::REFUSED_STREAM, frame.error
   end
 
+  def test_client_skips_interim_responses
+    input = IO::Memory.new
+    encoder = HPACK::Encoder.new(huffman: false)
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      encoder.encode(HTTP::Headers{":status" => "100"}))
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      encoder.encode(HTTP::Headers{":status" => "103", "link" => "</style.css>; rel=preload"}))
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      encoder.encode(HTTP::Headers{":status" => "200"}))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    frames = Array.new(3) { connection.receive }
+    assert_equal HTTP::Headers{":status" => "200"}, stream.headers
+    assert_nil frames[0]
+    assert_nil frames[1]
+    assert_same stream, frames[2].try(&.stream)
+    assert_empty stream.data.gets_to_end
+  end
+
+  def test_client_resets_stream_on_interim_response_with_end_stream
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "100"}))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create(state: Stream::State::OPEN)
+
+    frame = connection.receive
+    assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output)
+    assert_nil frame
+    assert_raises(IO::Error) { stream.data.gets_to_end }
+  end
+
   def test_client_respects_server_advertised_max_concurrent_streams
     # max_concurrent_streams=1
     settings_frame = {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 3, 0, 0, 0, 1]}
