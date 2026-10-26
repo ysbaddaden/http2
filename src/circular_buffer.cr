@@ -85,11 +85,14 @@ class HTTP2::CircularBuffer < IO
   end
 
   # Close the buffer for reading or writing or both.
+  #
+  # Resumes all pending readers and writers: closing either side affects both,
+  # for example closing for write tells readers that EOF was reached.
   def close(closed : Closed = :all) : Nil
     synchronize do
       @closed |= closed
-      @readers.broadcast if closed.read?
-      @writers.broadcast if closed.write?
+      @readers.broadcast
+      @writers.broadcast
     end
   end
 

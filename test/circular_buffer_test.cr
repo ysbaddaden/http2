@@ -40,6 +40,47 @@ class HTTP2::CircularBufferTest < Minitest::Test
     assert_raises(IO::Error) { wait }
   end
 
+  def test_close_write_resumes_pending_reader_with_eof
+    cb = CircularBuffer.new(32)
+    result = Channel(Int32 | Exception).new(1)
+    spawn do
+      result.send(cb.read(Bytes.new(8)))
+    rescue ex
+      result.send(ex)
+    end
+    Fiber.yield # let the reader block on the empty buffer
+
+    cb.close(:write)
+
+    select
+    when value = result.receive
+      assert_equal 0, value
+    when timeout(1.second)
+      flunk "reader is still blocked after close(:write)"
+    end
+  end
+
+  def test_close_read_resumes_pending_writer
+    cb = CircularBuffer.new(32)
+    result = Channel(Exception?).new(1)
+    spawn do
+      cb.write(Bytes.new(64))
+      result.send(nil)
+    rescue ex
+      result.send(ex)
+    end
+    Fiber.yield # let the writer block on the full buffer
+
+    cb.close(:read)
+
+    select
+    when value = result.receive
+      assert_instance_of IO::Error, value
+    when timeout(1.second)
+      flunk "writer is still blocked after close(:read)"
+    end
+  end
+
   def test_read_from_closed_stream
     cb = CircularBuffer.new(32)
     cb.close(:read)
