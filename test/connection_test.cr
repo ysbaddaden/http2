@@ -48,6 +48,40 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Error::Code::REFUSED_STREAM, error.code
   end
 
+  def test_rejects_header_block_larger_than_max_header_list_size
+    payload = HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{
+      ":method"    => "GET",
+      ":scheme"    => "http",
+      ":authority" => "example.com",
+      ":path"      => "/",
+      "x-large"    => "a" * 3000,
+    })
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_STREAM, 1, payload[0, 1000])
+    write_frame(input, Frame::Type::CONTINUATION, Frame::Flags::None, 1, payload[1000, 1000])
+    write_frame(input, Frame::Type::CONTINUATION, Frame::Flags::END_HEADERS, 1, payload[2000..])
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :server)
+    connection.local_settings.max_header_list_size = 2048
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
+
+  def test_stops_reading_continuation_frames_past_max_header_list_size
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::None, 1, Bytes.new(1000))
+    100.times { write_frame(input, Frame::Type::CONTINUATION, Frame::Flags::None, 1, Bytes.new(1000)) }
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+    # stopped past the default max_header_list_size (16384)
+    assert input.pos < 20_000, "read #{input.pos} bytes"
+  end
+
   def test_server_respects_client_advertised_max_concurrent_streams
     # max_concurrent_streams=1
     settings_frame = {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 3, 0, 0, 0, 1]}
@@ -573,6 +607,7 @@ class HTTP2::ConnectionTest < Minitest::Test
 
     output.rewind
     server = Connection.new(output, :server)
+    server.local_settings.max_header_list_size = 1 << 16
     frame = server.receive.not_nil!
     assert_equal headers, frame.stream.headers
   end
@@ -593,6 +628,7 @@ class HTTP2::ConnectionTest < Minitest::Test
 
     output.rewind
     server = Connection.new(output, :server)
+    server.local_settings.max_header_list_size = 1 << 16
     frame = server.receive.not_nil!
     assert_equal headers, frame.stream.headers
     assert_equal Stream::State::OPEN, frame.stream.state
@@ -618,6 +654,7 @@ class HTTP2::ConnectionTest < Minitest::Test
 
     output.rewind
     client = Connection.new(output, :client)
+    client.local_settings.max_header_list_size = 1 << 16
     client.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
     frame = client.receive.not_nil!
     assert_equal headers, frame.stream.headers
@@ -663,6 +700,7 @@ class HTTP2::ConnectionTest < Minitest::Test
     # increasing stream identifiers, header blocks not interleaved
     output.rewind
     server = Connection.new(output, :server)
+    server.local_settings.max_header_list_size = 1 << 16
     10.times do |i|
       frame = server.receive.not_nil!
       assert_equal 2 * i + 1, frame.stream.id

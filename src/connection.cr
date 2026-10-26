@@ -398,6 +398,7 @@ module HTTP2
     # decompressing everything
     private def read_headers_payload(frame, size)
       stream = frame.stream
+      validate_header_block_size(size)
 
       pointer = GC.malloc_atomic(size).as(UInt8*)
       io.read_fully(pointer.to_slice(size))
@@ -413,7 +414,7 @@ module HTTP2
           raise Error.protocol_error("EXPECTED continuation frame for stream ##{stream.id} not ##{frame.stream.id}")
         end
 
-        # FIXME: raise if the payload grows too big
+        validate_header_block_size(size + frame.size)
         pointer = pointer.realloc(size + frame.size)
         io.read_fully((pointer + size).to_slice(frame.size))
 
@@ -421,6 +422,16 @@ module HTTP2
       end
 
       pointer.to_slice(size)
+    end
+
+    # A header block isn't larger than the header list it encodes: refuses a
+    # header block larger than the SETTINGS_MAX_HEADER_LIST_SIZE we announced
+    # before reading it, so a peer can't make us buffer an unbounded block
+    # (RFC 9113 sections 6.5.2 and 10.5.1).
+    private def validate_header_block_size(size) : Nil
+      if (max_size = local_settings.max_header_list_size) && size > max_size
+        raise Error.protocol_error("HEADER list size exceeds limit")
+      end
     end
 
     private def read_push_promise_frame(frame)
