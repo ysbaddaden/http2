@@ -131,6 +131,68 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Error::Code::REFUSED_STREAM, error.code
   end
 
+  def test_send_data_waits_when_another_stream_took_the_connection_window
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::WINDOW_UPDATE, Frame::Flags::None, 0, Bytes[0, 0, 0x40, 0])
+    input.rewind
+    output = IO::Memory.new
+    connection = RacingConnection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create(state: Stream::State::OPEN)
+
+    result = Channel(Exception?).new(1)
+    spawn do
+      stream.send_data("hello", Frame::Flags::END_STREAM)
+      result.send(nil)
+    rescue ex
+      result.send(ex)
+    end
+    # the WINDOW_UPDATE must come after the sender lost the race
+    select
+    when connection.raced.receive
+    when timeout(1.second)
+      flunk "sender didn't consume the connection window"
+    end
+    connection.receive # WINDOW_UPDATE
+
+    select
+    when value = result.receive
+      assert_nil value
+    when timeout(1.second)
+      flunk "sender is still blocked after WINDOW_UPDATE"
+    end
+    assert_equal [{1, Frame::Flags::END_STREAM, 5}], data_frames(output)
+  end
+
+  # Another stream takes the whole connection window between the sender's
+  # window check and its own consumption, once; then signals `#raced`.
+  private class RacingConnection < Connection
+    getter raced = Channel(Nil).new(1)
+    @race = true
+
+    protected def consume_outbound_window_size(size)
+      return super unless @race
+      @race = false
+      super(outbound_window_size)
+      @raced.send(nil)
+      0
+    end
+  end
+
+  # Parses the DATA frames written to *io* as {stream_id, flags, size}.
+  private def data_frames(io : IO::Memory)
+    io.rewind
+    frames = [] of {Int32, Frame::Flags, Int32}
+    while io.pos < io.size
+      header = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+      size, type = (header >> 8).to_i, header & 0xff
+      flags = Frame::Flags.new(io.read_byte.not_nil!)
+      stream_id = io.read_bytes(UInt32, IO::ByteFormat::BigEndian).to_i32 & 0x7fffffff
+      frames << {stream_id, flags, size} if type == Frame::Type::DATA.value
+      io.skip(size)
+    end
+    frames
+  end
+
   def test_server_enforces_local_max_concurrent_streams_for_client_initiated_streams
     headers = HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{
       ":method"    => "GET",

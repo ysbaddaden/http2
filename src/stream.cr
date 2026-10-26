@@ -292,16 +292,19 @@ module HTTP2
         size = 0
 
         @mutex.to_reference.synchronize do
-          while @outbound_window_size < 1 || connection.outbound_window_size < 1
-            error! if state.closed?
-            @senders.to_reference.wait
+          loop do
+            while @outbound_window_size < 1 || connection.outbound_window_size < 1
+              error! if state.closed?
+              @senders.to_reference.wait
+            end
+
+            size = {data.size, @outbound_window_size, connection.remote_settings.max_frame_size}.min
+
+            # another stream may have consumed the connection window since we
+            # checked it: wait again
+            size = connection.consume_outbound_window_size(size)
+            break unless size == 0
           end
-
-          size = {data.size, @outbound_window_size, connection.remote_settings.max_frame_size}.min
-          next if size == 0
-
-          size = connection.consume_outbound_window_size(size)
-          next if size == 0
 
           @outbound_window_size -= size
         end
