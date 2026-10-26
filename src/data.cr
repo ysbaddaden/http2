@@ -53,12 +53,25 @@ module HTTP2
       buffer.write(slice)
     end
 
-    protected def copy_from(io : IO, size : Int32)
+    # Buffers *size* bytes of DATA from *io*. Returns false if the body was
+    # closed, for example by another fiber that reset the stream while the
+    # DATA was being received: the bytes are skipped then.
+    protected def copy_from(io : IO, size : Int32) : Bool
       @size += size
       if (buffer.capacity - buffer.size) < size
         raise ArgumentError.new
       end
-      buffer.copy_from(io, size)
+      begin
+        # the buffer can't be closed once the copy started (it holds the
+        # buffer's lock) and the flow-control window leaves room for the
+        # bytes: a closed buffer raises before any byte is read
+        buffer.copy_from(io, size)
+      rescue ex : IO::Error
+        raise ex unless buffer.closed?(:read) || buffer.closed?(:write)
+        io.skip(size)
+        return false
+      end
+      true
     end
 
     # Returns true once the whole body was received (END_STREAM).

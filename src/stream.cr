@@ -116,6 +116,14 @@ module HTTP2
     # the closed stream then.
     protected getter? reset_sent : Bool = false
 
+    @received_reset_code : Error::Code? = nil
+
+    # The error code of the RST_STREAM frame the peer reset the stream with,
+    # if any. Any fiber may read it: it's kept under the stream's lock.
+    protected def received_reset_code : Error::Code?
+      @mutex.to_reference.synchronize { @received_reset_code }
+    end
+
     # Returns true if we sent a HEAD request on the stream: the response has
     # no content.
     protected getter? head_request : Bool = false
@@ -144,6 +152,15 @@ module HTTP2
       self.state = State::CLOSED unless state.closed?
       data.close unless data.complete?
       resume_senders
+    end
+
+    # The peer reset the stream: keeps the error code, then aborts the
+    # stream. A reader woken by the abort, for example a body reader that
+    # gets an `IO::Error`, can tell the reset and its code from a closed
+    # connection.
+    protected def reset_received(code : Error::Code) : Nil
+      @mutex.to_reference.synchronize { @received_reset_code = code }
+      abort
     end
 
     protected def increment_outbound_window_size(increment : Int32) : Nil
@@ -313,7 +330,15 @@ module HTTP2
         data += size
 
         frame.flags |= Frame::Flags::END_STREAM if data.empty? && end_stream
-        connection.send(frame)
+        begin
+          connection.send(frame)
+        rescue ex : Error
+          # the stream got closed (e.g. reset by another fiber) after it
+          # consumed the connection window: the frame wasn't sent, so the
+          # window goes back to the other streams (RFC 9113 section 6.9)
+          connection.restore_outbound_window_size(size)
+          raise ex
+        end
       end
     end
 
@@ -427,7 +452,11 @@ module HTTP2
         when Frame::Type::WINDOW_UPDATE, Frame::Type::RST_STREAM
           # ignore
         else
-          if receiving
+          if receiving && reset_sent?
+            # another fiber reset the stream while the connection received
+            # the frame, that the peer sent before it got the RST_STREAM
+            # (RFC 9113 section 5.1)
+          elsif receiving
             raise Error.stream_closed("STREAM #{id} is #{state}")
           else
             raise Error.internal_error("STREAM #{id} is #{state}")

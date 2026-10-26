@@ -178,6 +178,26 @@ class HTTP2::ConnectionTest < Minitest::Test
     end
   end
 
+  def test_send_data_gives_the_connection_window_back_when_the_stream_got_closed
+    connection = ClosingConnection.new(IO::Stapled.new(IO::Memory.new, IO::Memory.new), :client)
+    stream = connection.streams.create(state: Stream::State::OPEN)
+    connection.closing = stream
+
+    assert_raises(Error) { stream.send_data("hello") }
+    # the DATA frame wasn't sent: its size is still available to other streams
+    assert_equal DEFAULT_INITIAL_WINDOW_SIZE, connection.outbound_window_size
+  end
+
+  # Closes a stream (as if another fiber reset it) right after the stream
+  # consumed the connection window to send DATA.
+  private class ClosingConnection < Connection
+    property closing : Stream?
+
+    protected def consume_outbound_window_size(size)
+      super.tap { closing.try(&.send_rst_stream(Error::Code::CANCEL)) }
+    end
+  end
+
   # Parses the DATA frames written to *io* as {stream_id, flags, size}.
   private def data_frames(io : IO::Memory)
     io.rewind
@@ -501,6 +521,38 @@ class HTTP2::ConnectionTest < Minitest::Test
     end
   end
 
+  def test_received_rst_stream_keeps_its_code_for_the_body_reader
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS,
+      1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}),
+    }
+    reset_stream_frame = {Frame::Type::RST_STREAM, Frame::Flags::None, 1, Bytes[0, 0, 0, 2]} # INTERNAL_ERROR
+    connection = new_connection(:client, headers_frame, reset_stream_frame)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+    assert_nil stream.received_reset_code
+
+    # the reader may wake before or after #receive returns: the code is
+    # known either way
+    result = Channel(Error::Code? | String).new(1)
+    spawn do
+      result.send(stream.data.gets_to_end)
+    rescue IO::Error
+      result.send(stream.received_reset_code)
+    end
+
+    connection.receive
+
+    select
+    when value = result.receive
+      assert_equal Error::Code::INTERNAL_ERROR, value
+    when timeout(1.second)
+      flunk "body reader is still blocked after RST_STREAM"
+    end
+  end
+
   def test_received_rst_stream_keeps_complete_body
     headers_frame = {
       Frame::Type::HEADERS,
@@ -738,6 +790,37 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal "1", stream3.headers["x-trailer"]
     # the ignored DATA still counts against the connection window
     assert_equal [{0, DEFAULT_INITIAL_WINDOW_SIZE}], window_updates(output)
+  end
+
+  def test_discards_data_received_after_the_body_was_closed
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200", "content-length" => "10"}))
+    write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, "hello".to_slice)
+    write_frame(input, Frame::Type::DATA, Frame::Flags::END_STREAM, 1, "world".to_slice)
+    write_frame(input, Frame::Type::PING, Frame::Flags::None, 0, Bytes.new(8))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+
+    # another fiber closed the body (e.g. reset the stream) while the
+    # connection was receiving DATA for it: the payload is discarded
+    stream.data.close
+    2.times { connection.receive }
+    assert_equal Frame::Type::PING, connection.receive.try(&.type)
+    assert_empty reset_streams(output)
+  end
+
+  def test_accepts_frames_on_a_stream_reset_while_receiving_them
+    connection = Connection.new(IO::Stapled.new(IO::Memory.new, IO::Memory.new), :client)
+    # another fiber reset the stream once the connection checked it but
+    # before the frame made the stream's state transition
+    stream = Stream.new(connection, 1, state: Stream::State::CLOSED, reset_sent: true)
+    stream.receiving(Frame.new(Frame::Type::DATA, stream))
+    stream.receiving(Frame.new(Frame::Type::HEADERS, stream, Frame::Flags::END_STREAM))
+    assert stream.state.closed?
   end
 
   def test_rejects_frames_on_closed_streams_it_did_not_reset_while_active

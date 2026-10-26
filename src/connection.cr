@@ -254,7 +254,8 @@ module HTTP2
       consume_inbound_window_size(frame.size)
 
       read_padded(frame) do |size|
-        stream.data.copy_from(io, size)
+        # skipped if another fiber closed the body meanwhile
+        next unless stream.data.copy_from(io, size)
 
         if frame.flags.end_stream?
           valid = close_body(stream)
@@ -497,7 +498,7 @@ module HTTP2
       error_code = Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))
       frame.error = error_code
       Log.trace { "  code=#{error_code.to_s}" }
-      frame.stream.abort
+      frame.stream.reset_received(error_code)
     end
 
     private def read_settings_frame(frame)
@@ -721,6 +722,13 @@ module HTTP2
         window_size, success = @outbound_window_size.compare_and_set(window_size, window_size - available, :relaxed, :relaxed)
         return available if success
       end
+    end
+
+    # Gives back *size* bytes a stream consumed from the connection outbound
+    # window size but didn't send.
+    protected def restore_outbound_window_size(size : Int32) : Nil
+      @outbound_window_size.add(size, :relaxed)
+      streams.each(&.resume_senders)
     end
 
     # Increments the connection outbound window size.
