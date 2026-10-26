@@ -391,6 +391,51 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal written, output.bytesize
   end
 
+  def test_ignores_frames_in_flight_on_streams_it_reset
+    encoder = HPACK::Encoder.new(indexing: HPACK::Indexing::ALWAYS, huffman: false)
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      encoder.encode(HTTP::Headers{":status" => "200"}))
+    # sent by the server before it received the RST_STREAM
+    3.times { write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(16384)) }
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      encoder.encode(HTTP::Headers{"x-trailer" => "1"}))
+    # refers to the dynamic table entry the trailers above added
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 3,
+      encoder.encode(HTTP::Headers{":status" => "200", "x-trailer" => "1"}))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream1 = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    stream3 = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+
+    stream1.send_rst_stream(Error::Code::CANCEL)
+    4.times { assert_nil connection.receive }
+
+    frame = connection.receive.not_nil!
+    assert_same stream3, frame.stream
+    assert_equal "1", stream3.headers["x-trailer"]
+    # the ignored DATA still counts against the connection window
+    assert_equal [{0, DEFAULT_INITIAL_WINDOW_SIZE}], window_updates(output)
+  end
+
+  def test_rejects_frames_on_closed_streams_it_did_not_reset_while_active
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}))
+    write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, "hello".to_slice)
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+
+    # resetting a closed stream leaves no frames in flight
+    stream.send_rst_stream(Error::Code::NO_ERROR)
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::STREAM_CLOSED, error.code
+  end
+
   # Fails the next write of a frame payload when armed, once.
   private class FailingWriter < IO
     property? fail_next_payload = false

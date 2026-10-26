@@ -111,6 +111,11 @@ module HTTP2
     protected def trailers=(@trailers : HTTP::Headers)
     end
 
+    # Returns true if we reset the stream while the peer could still send
+    # frames on it. The connection must ignore the frames that it receives on
+    # the closed stream then.
+    protected getter? reset_sent : Bool = false
+
     def ==(other : Stream)
       id == other.id
     end
@@ -300,6 +305,10 @@ module HTTP2
 
     # Closes the stream. Optionally reporting an error status.
     def send_rst_stream(error_code : Error::Code) : Nil
+      # the peer may have sent frames before it receives the RST_STREAM
+      # (RFC 9113 section 5.1)
+      @reset_sent = true if state.open? || state.half_closed_local?
+
       io = IO::Memory.new(RST_STREAM_FRAME_SIZE)
       io.write_bytes(error_code.value.to_u32, IO::ByteFormat::BigEndian)
       connection.send Frame.new(Frame::Type::RST_STREAM, self, payload: io.to_slice)

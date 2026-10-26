@@ -122,9 +122,23 @@ module HTTP2
     # Unknown frame types are reported with a raw `Frame#payload`, so a client
     # or server may handle them (e.g. custom extensions). They can be safely
     # ignored.
+    #
+    # Returns `nil` when the frame was ignored, for example DATA received on a
+    # stream after we reset it.
     def receive : Frame?
       frame = read_frame_header
       stream = frame.stream
+
+      if stream.reset_sent? && stream.state.closed?
+        case frame.type
+        when Frame::Type::DATA
+          ignore_data_frame(frame)
+          return
+        when Frame::Type::HEADERS
+          ignore_headers_frame(frame)
+          return
+        end
+      end
 
       stream.receiving(frame)
 
@@ -282,6 +296,33 @@ module HTTP2
               raise Error.protocol_error("MALFORMED data frame")
             end
           end
+        end
+      end
+    end
+
+    # Ignores a DATA frame received on a stream we reset, that the peer sent
+    # before it received the RST_STREAM. It still counts against the
+    # connection window (RFC 9113 sections 5.1 and 6.9).
+    private def ignore_data_frame(frame) : Nil
+      consume_inbound_window_size(frame.size)
+      io.skip(frame.size)
+    end
+
+    # Ignores a HEADERS frame received on a stream we reset, that the peer sent
+    # before it received the RST_STREAM. The header block must still be
+    # decoded to keep the HPACK decoder in sync (RFC 9113 sections 4.3 and 5.1).
+    private def ignore_headers_frame(frame) : Nil
+      read_padded(frame) do |size|
+        if frame.flags.priority?
+          io.skip(5)
+          size -= 5
+        end
+        buffer = read_headers_payload(frame, size)
+        begin
+          hpack_decoder.decode(buffer, HTTP::Headers.new)
+        rescue ex : HPACK::Error
+          Log.trace { "HPACK::Error: #{ex.message}" }
+          raise Error.compression_error
         end
       end
     end
