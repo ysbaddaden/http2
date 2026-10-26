@@ -61,7 +61,7 @@ module HTTP2
     @outbound_window_size : Int32
 
     # :nodoc:
-    protected def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state = State::IDLE)
+    protected def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state = State::IDLE, @reset_sent = false)
       @outbound_window_size = connection.remote_settings.initial_window_size
 
       @mutex = uninitialized ReferenceStorage(Sync::Mutex)
@@ -429,6 +429,9 @@ module HTTP2
 
     private def state=(@state)
       Log.trace { "; Stream is now #{state}" }
+      # the connection forgets closed streams; the stream and its body live
+      # on as long as they're referenced
+      connection.streams.remove(self) if state.closed?
     end
 
     # :nodoc:

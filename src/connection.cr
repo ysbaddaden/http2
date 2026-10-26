@@ -217,7 +217,7 @@ module HTTP2
       end
 
       frame_type = Frame::Type.new(type.to_i)
-      unless frame_type.priority? || streams.valid?(stream_id)
+      unless frame_type.priority? || streams.valid?(stream_id, frame_type)
         raise Error.protocol_error("INVALID stream_id ##{stream_id}")
       end
 

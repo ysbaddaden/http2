@@ -3,11 +3,20 @@ require "sync/rw_lock"
 
 module HTTP2
   class Streams
+    # The identifiers of forgotten streams we reset are remembered, so the
+    # frames the peer sent before it received the RST_STREAM are ignored: for
+    # as many streams as may be open at once in both directions, plus this
+    # margin, and no more than the maximum (RFC 9113 section 5.1).
+    private RESET_IDS_MARGIN  =   1024
+    private RESET_IDS_MAXIMUM = 65_536
+
     # :nodoc:
     protected def initialize(@connection : Connection, @type : Connection::Type)
       @streams = {} of Int32 => Stream
       @lock = Sync::RWLock.new
       @highest_remote_id = 0
+      @reset_ids = Deque(Int32).new
+      @reset_ids_set = Set(Int32).new
 
       case @type
       in .client?
@@ -23,39 +32,80 @@ module HTTP2
     # stream, unless `consume` is set to false, for example a PRIORITY frame
     # forward declares a stream priority/dependency but doesn't consume the
     # stream identifiers, so they are still valid.
+    #
+    # Closed streams are forgotten: returns a new stream in the CLOSED state
+    # for a stream that was opened then forgotten.
     def find(id : Int32, consume : Bool = true) : Stream
       if @lock.try_lock_read?
-        stream = @streams[id]?
-        @lock.unlock_read
+        begin
+          stream = @streams[id]? || unsafe_forgotten(id)
+        ensure
+          @lock.unlock_read
+        end
         return stream if stream
       end
 
       @lock.write do
-        @streams[id] ||= begin
-          if @type.peer.initiates?(id)
-            if max = @connection.local_settings.max_concurrent_streams
-              if unsafe_active_count(@type.peer) >= max
-                raise Error.refused_stream("MAXIMUM peer-initiated stream capacity reached")
-              end
+        if stream = @streams[id]? || unsafe_forgotten(id)
+          next stream
+        end
+
+        if @type.peer.initiates?(id)
+          if max = @connection.local_settings.max_concurrent_streams
+            if unsafe_active_count(@type.peer) >= max
+              raise Error.refused_stream("MAXIMUM peer-initiated stream capacity reached")
             end
           end
-          if id > @highest_remote_id && consume
-            @highest_remote_id = id
+        end
+        if id > @highest_remote_id && consume
+          @highest_remote_id = id
+        end
+        @streams[id] = Stream.new(@connection, id)
+      end
+    end
+
+    # A stream identifier at or below the last one opened in its direction
+    # that isn't in the table belongs to a closed stream (RFC 9113 section
+    # 5.1.1), never an idle one. The stream remembers if we reset it.
+    private def unsafe_forgotten(id : Int32) : Stream?
+      return if id == 0
+      return unless id <= (@type.initiates?(id) ? @id_counter : @highest_remote_id)
+      Stream.new(@connection, id, state: Stream::State::CLOSED, reset_sent: @reset_ids_set.includes?(id))
+    end
+
+    # Forgets a closed stream, so it can be garbage collected once nothing
+    # else references it (e.g. a body that hasn't been read yet).
+    protected def remove(stream : Stream) : Nil
+      @lock.write do
+        @streams.delete(stream.id)
+
+        if stream.reset_sent?
+          @reset_ids << stream.id
+          @reset_ids_set << stream.id
+
+          limit = reset_ids_limit
+          while @reset_ids.size > limit
+            @reset_ids_set.delete(@reset_ids.shift)
           end
-          Stream.new(@connection, id)
         end
       end
     end
 
+    private def reset_ids_limit : Int32
+      local = @connection.local_settings.max_concurrent_streams || 0_u32
+      remote = @connection.remote_settings.max_concurrent_streams || 0_u32
+      Math.min(RESET_IDS_MARGIN.to_u64 + local + remote, RESET_IDS_MAXIMUM.to_u64).to_i32
+    end
+
+    # Yields each stream. Iterates a copy of the streams, so the block may
+    # close (and forget) streams.
     protected def each(&)
-      @lock.read do
-        @streams.each { |_, stream| yield stream }
-      end
+      @lock.read { @streams.values }.each { |stream| yield stream }
     end
 
     # Returns true if the incoming *stream_id* is valid for the current
     # connection.
-    protected def valid?(stream_id : Int32)
+    protected def valid?(stream_id : Int32, frame_type : Frame::Type)
       return true if stream_id == 0 # stream #0 is always valid
 
       if @type.initiates?(stream_id)
@@ -63,8 +113,13 @@ module HTTP2
         @lock.read { stream_id <= @id_counter }
       else
         # peer owns the stream_id: stream already exists, or stream id grows
-        # (can't shrink)
-        @lock.read { @streams[stream_id]? } || stream_id >= @highest_remote_id
+        # (can't shrink), or the stream was closed (and forgotten) but a
+        # HEADERS frame can't open a new stream there, unless we reset it:
+        # the peer may have sent HEADERS (trailers) before it received the
+        # RST_STREAM, that the connection ignores (RFC 9113 section 5.1)
+        stream_id >= @highest_remote_id ||
+          !frame_type.headers? ||
+          @lock.read { @streams.has_key?(stream_id) || @reset_ids_set.includes?(stream_id) }
       end
     end
 
@@ -105,10 +160,10 @@ module HTTP2
       end
     end
 
+    # The highest identifier of a stream the peer opened, that we may have
+    # processed (RFC 9113 section 6.8).
     protected def last_stream_id : Int32
-      @lock.read do
-        @streams.reduce(0) { |a, (k, _)| a > k ? a : k }
-      end
+      @lock.read { @highest_remote_id }
     end
   end
 end
