@@ -78,4 +78,34 @@ class HTTP2::ConnectionTest < Minitest::Test
     error = assert_raises(Error) { connection.receive }
     assert_equal Error::Code::REFUSED_STREAM, error.code
   end
+
+  def test_client_accepts_frames_on_streams_it_opened
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM,
+      1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}),
+    }
+    connection = new_connection(:client, headers_frame)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    frame = connection.receive.not_nil!
+    assert_same stream, frame.stream
+    assert_equal "200", stream.headers[":status"]
+    assert_equal Stream::State::CLOSED, stream.state
+  end
+
+  def test_client_rejects_frames_on_streams_it_did_not_open
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM,
+      3,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}),
+    }
+    connection = new_connection(:client, headers_frame)
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
 end

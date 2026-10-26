@@ -56,12 +56,16 @@ module HTTP2
     # Returns true if the incoming *stream_id* is valid for the current
     # connection.
     protected def valid?(stream_id : Int32)
-      stream_id == 0 || (                                # stream #0 is always valid, or
-        @type.peer.initiates?(stream_id) && (            # peer owns the stream_id, and
-          @lock.read { @streams[stream_id]? } || # stream already exists, or
-          stream_id >= @highest_remote_id                # stream id grows (can't shrink)
-        )
-      )
+      return true if stream_id == 0 # stream #0 is always valid
+
+      if @type.initiates?(stream_id)
+        # we own the stream_id: we must have opened the stream already
+        @lock.read { stream_id <= @id_counter }
+      else
+        # peer owns the stream_id: stream already exists, or stream id grows
+        # (can't shrink)
+        @lock.read { @streams[stream_id]? } || stream_id >= @highest_remote_id
+      end
     end
 
     # Creates an outgoing stream. For example to handle a client request or a
