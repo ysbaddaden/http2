@@ -131,6 +131,43 @@ class HTTP2::ConnectionTest < Minitest::Test
     {connection, stream, output}
   end
 
+  def test_client_keeps_trailers_after_a_response_without_data
+    stream = trailers_after(:client, HTTP::Headers{":status" => "200"})
+    assert_equal HTTP::Headers{":status" => "200"}, stream.headers
+  end
+
+  def test_server_keeps_trailers_after_a_request_without_data
+    stream = trailers_after(:server, REQUEST)
+    assert_equal REQUEST, stream.headers
+  end
+
+  def test_server_keeps_trailers_after_empty_data
+    stream = trailers_after(:server, REQUEST, data: true)
+    assert_equal REQUEST, stream.headers
+  end
+
+  # Receives *headers* on stream 1, then an empty DATA frame if *data* is
+  # true, then trailers that end the stream. Returns the stream, once its
+  # trailers and empty body were checked.
+  private def trailers_after(type : Connection::Type, headers : HTTP::Headers, data = false) : Stream
+    encoder = HPACK::Encoder.new(huffman: false)
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1, encoder.encode(headers))
+    write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1) if data
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      encoder.encode(HTTP::Headers{"x-checksum" => "abc"}))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), type)
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL) if type.client?
+
+    frames = Array.new(data ? 3 : 2) { connection.receive.not_nil! }
+    stream = frames.first.stream
+    assert frames.all?(&.stream.same?(stream))
+    assert_equal HTTP::Headers{"x-checksum" => "abc"}, stream.trailers?
+    assert_empty stream.data.gets_to_end
+    stream
+  end
+
   def test_client_respects_server_advertised_max_concurrent_streams
     # max_concurrent_streams=1
     settings_frame = {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 3, 0, 0, 0, 1]}

@@ -47,6 +47,49 @@ class HTTP2::ServerTest < Minitest::Test
     listener.try(&.close)
   end
 
+  def test_request_trailers_after_a_request_without_data
+    requests = Channel({HTTP::Headers, HTTP::Headers?}).new(2)
+    server = HTTP::Server.new do |context|
+      context.request.body.try(&.gets_to_end)
+      requests.send({context.request.headers.dup, context.trailers})
+      context.response.print "ok"
+    end
+    listener = TCPServer.new("127.0.0.1", 0)
+    server.bind(listener)
+    spawn { server.listen }
+
+    socket = TCPSocket.new("127.0.0.1", listener.local_address.port)
+    client = Connection.new(socket, :client)
+    client.write_client_preface
+    client.write_settings
+    stream = client.streams.create
+    stream.send_headers(HTTP::Headers{
+      ":method"    => "POST",
+      ":scheme"    => "http",
+      ":authority" => "example.com",
+      ":path"      => "/",
+    })
+    stream.send_headers(HTTP::Headers{"x-checksum" => "abc"}, Frame::Flags::END_STREAM)
+    receive_until(client) { |frame| frame.stream.id == 1 && frame.flags.end_stream? }
+    assert_equal "ok", stream.data.gets_to_end
+
+    headers, trailers = requests.receive
+    refute headers.has_key?("x-checksum")
+    assert_equal HTTP::Headers{"x-checksum" => "abc"}, trailers
+
+    # the trailers didn't dispatch the request again
+    write_frame(socket, Frame::Type::PING, Frame::Flags::None, 0, Bytes.new(8))
+    receive_until(client) { |frame| frame.type.ping? }
+    select
+    when request = requests.receive
+      flunk "the request was dispatched twice: #{request.inspect}"
+    when timeout(50.milliseconds)
+    end
+  ensure
+    socket.try(&.close)
+    listener.try(&.close)
+  end
+
   # Receives frames until the block returns true for one.
   private def receive_until(connection, &)
     loop do

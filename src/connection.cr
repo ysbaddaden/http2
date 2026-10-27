@@ -300,10 +300,12 @@ module HTTP2
           size -= 5
         end
 
-        # only a trailer section may follow the body, or the final response
-        # on a client (RFC 9113 section 8.1); the headers of a promised
-        # stream hold the promised request until its response
-        trailer = stream.data? || (@type.client? && stream.headers.has_key?(":status"))
+        # only a trailer section may follow the request or the final
+        # response, with or without a body (RFC 9113 section 8.1); a client
+        # keeps the headers of the final response only, but those of a
+        # promised stream hold the promised request until its response
+        trailer = stream.data? ||
+                  (@type.client? ? stream.headers.has_key?(":status") : !stream.headers.empty?)
 
         buffer = read_headers_payload(frame, size)
         interim = false
