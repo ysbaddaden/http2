@@ -391,6 +391,40 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Error::Code::PROTOCOL_ERROR, error.code
   end
 
+  def test_server_accepts_frames_on_streams_it_opened
+    window_update_frame = {Frame::Type::WINDOW_UPDATE, Frame::Flags::None, 2, Bytes[0, 0, 0, 1]}
+    reset_stream_frame = {Frame::Type::RST_STREAM, Frame::Flags::None, 2, Bytes[0, 0, 0, 8]} # CANCEL
+    connection = new_connection(:server, window_update_frame, reset_stream_frame)
+    stream = connection.streams.create(state: Stream::State::OPEN)
+    assert_equal 2, stream.id
+
+    frame = connection.receive.not_nil!
+    assert_equal Frame::Type::WINDOW_UPDATE, frame.type
+    assert_same stream, frame.stream
+    assert_equal Stream::State::OPEN, stream.state
+
+    frame = connection.receive.not_nil!
+    assert_equal Frame::Type::RST_STREAM, frame.type
+    assert_same stream, frame.stream
+    assert_equal Error::Code::CANCEL, frame.error
+    assert_equal Stream::State::CLOSED, stream.state
+  end
+
+  def test_server_rejects_frames_on_streams_it_did_not_open
+    # a request would open the stream, were it initiated by the client
+    headers_frame = {
+      Frame::Type::HEADERS,
+      Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM,
+      4,
+      HPACK::Encoder.new(huffman: false).encode(REQUEST),
+    }
+    connection = new_connection(:server, headers_frame)
+    connection.streams.create(state: Stream::State::OPEN)
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
+
   def test_sending_headers_frame_with_end_stream_half_closes_the_local_side
     connection = new_connection(:client)
     stream = connection.streams.create
