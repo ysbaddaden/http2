@@ -54,14 +54,15 @@ module HTTP2
     # The stream identifier. Odd-numbered for client streams (requests),
     # even-numbered for server initiated streams (server-push).
     getter id : Int32
-    getter state : State
     property priority : Priority
     private getter connection : Connection
 
     @outbound_window_size : Int32
 
     # :nodoc:
-    protected def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state = State::IDLE, @reset_sent = false)
+    protected def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, state = State::IDLE, reset_sent = false)
+      @state = Atomic(State).new(state)
+      @reset_sent = Atomic(Bool).new(reset_sent)
       @outbound_window_size = connection.remote_settings.initial_window_size
 
       @mutex = uninitialized ReferenceStorage(Sync::Mutex)
@@ -74,6 +75,13 @@ module HTTP2
 
       @data = uninitialized Data
       @data = Data.new(self, connection.local_settings.initial_window_size)
+    end
+
+    # The state of the stream. Any fiber may read it, while the fiber that
+    # receives frames, a fiber that sends on the stream, or one that aborts
+    # it changes it.
+    def state : State
+      @state.get
     end
 
     # Returns true if the stream is in an active `#state`, that is OPEN or
@@ -113,8 +121,11 @@ module HTTP2
 
     # Returns true if we reset the stream while the peer could still send
     # frames on it. The connection must ignore the frames that it receives on
-    # the closed stream then.
-    protected getter? reset_sent : Bool = false
+    # the closed stream then. Any fiber may reset the stream while the
+    # connection receives frames on it.
+    protected def reset_sent? : Bool
+      @reset_sent.get
+    end
 
     @received_reset_code : Error::Code? = nil
 
@@ -354,7 +365,7 @@ module HTTP2
       # the peer may have sent frames before it receives the RST_STREAM
       # (RFC 9113 section 5.1), for example the response on a stream it
       # promised
-      @reset_sent = true if state.open? || state.half_closed_local? || state.reserved_remote?
+      @reset_sent.set(true) if state.open? || state.half_closed_local? || state.reserved_remote?
 
       io = IO::Memory.new(RST_STREAM_FRAME_SIZE)
       io.write_bytes(error_code.value.to_u32, IO::ByteFormat::BigEndian)
@@ -487,11 +498,12 @@ module HTTP2
       end
     end
 
-    private def state=(@state)
+    private def state=(state : State)
+      previous = @state.swap(state)
       Log.trace { "; Stream is now #{state}" }
-      # the connection forgets closed streams; the stream and its body live
-      # on as long as they're referenced
-      connection.streams.remove(self) if state.closed?
+      # the connection forgets closed streams, once; the stream and its body
+      # live on as long as they're referenced
+      connection.streams.remove(self) if state.closed? && !previous.closed?
     end
 
     # :nodoc:
