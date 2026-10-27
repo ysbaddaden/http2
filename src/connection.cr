@@ -665,7 +665,9 @@ module HTTP2
 
       if stream.id == 0
         increment_outbound_window_size(window_size_increment)
-      else
+      elsif !stream.state.closed?
+        # nothing may be sent on a closed stream: the increment is ignored,
+        # and can't be an error (RFC 9113 sections 5.1 and 6.9)
         stream.increment_outbound_window_size(window_size_increment)
       end
     end

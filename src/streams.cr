@@ -10,6 +10,11 @@ module HTTP2
     private RESET_IDS_MARGIN  =   1024
     private RESET_IDS_MAXIMUM = 65_536
 
+    # The number of stand-ins for forgotten streams kept for reuse, so the
+    # frames on a forgotten stream, or on a few at once, don't allocate a
+    # stand-in each.
+    private STAND_INS = 16
+
     # :nodoc:
     protected def initialize(@connection : Connection, @type : Connection::Type)
       @streams = {} of Int32 => Stream
@@ -18,6 +23,7 @@ module HTTP2
       @reset_ids = Deque(Int32).new
       @reset_ids_set = Set(Int32).new
       @goaway = false
+      @stand_ins = StaticArray(Stream?, STAND_INS).new(nil)
 
       case @type
       in .client?
@@ -34,12 +40,12 @@ module HTTP2
     # forward declares a stream priority/dependency but doesn't consume the
     # stream identifiers, so they are still valid.
     #
-    # Closed streams are forgotten: returns a new stream in the CLOSED state
+    # Closed streams are forgotten: returns a stand-in in the CLOSED state
     # for a stream that was opened then forgotten.
     def find(id : Int32, consume : Bool = true) : Stream
       if @lock.try_lock_read?
         begin
-          stream = @streams[id]? || unsafe_forgotten(id)
+          stream = @streams[id]? || unsafe_stand_in(id)
         ensure
           @lock.unlock_read
         end
@@ -67,11 +73,28 @@ module HTTP2
 
     # A stream identifier at or below the last one opened in its direction
     # that isn't in the table belongs to a closed stream (RFC 9113 section
-    # 5.1.1), never an idle one. The stream remembers if we reset it.
+    # 5.1.1), never an idle one. Its stand-in remembers if we reset it, and
+    # is reused for the next frames on the stream. Must hold the write lock.
     private def unsafe_forgotten(id : Int32) : Stream?
       return if id == 0
       return unless id <= (@type.initiates?(id) ? @id_counter : @highest_remote_id)
-      Stream.new(@connection, id, state: Stream::State::CLOSED, reset_sent: @reset_ids_set.includes?(id))
+      unsafe_stand_in(id) ||
+        (@stand_ins[stand_in_index(id)] = Stream.new(@connection, id, state: Stream::State::CLOSED, reset_sent: @reset_ids_set.includes?(id)))
+    end
+
+    # Returns the stand-in kept for the forgotten stream *id*, if any. A
+    # stand-in whose reset was forgotten meanwhile isn't. Must hold the
+    # lock, for reading at least.
+    private def unsafe_stand_in(id : Int32) : Stream?
+      if (stand_in = @stand_ins[stand_in_index(id)]) && stand_in.id == id
+        stand_in if stand_in.reset_sent? == @reset_ids_set.includes?(id)
+      end
+    end
+
+    # The identifiers of a direction are odd or even: consecutive streams
+    # get their own slots.
+    private def stand_in_index(id : Int32) : Int32
+      (id >> 1) % STAND_INS
     end
 
     # Forgets a closed stream, so it can be garbage collected once nothing

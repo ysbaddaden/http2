@@ -1804,6 +1804,66 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Error::Code::STREAM_CLOSED, error.code
   end
 
+  def test_frames_on_a_forgotten_stream_share_one_stand_in
+    connection, stream = client_closed_stream do |input|
+      2.times { write_frame(input, Frame::Type::WINDOW_UPDATE, Frame::Flags::None, 1, Bytes[0, 0, 0, 1]) }
+      write_frame(input, Frame::Type::RST_STREAM, Frame::Flags::None, 1, Bytes[0, 0, 0, 0])
+    end
+    forgotten = connection.streams.find(1)
+    refute_same stream, forgotten, "stream 1 is still in the stream table"
+
+    3.times { assert_same forgotten, connection.receive.not_nil!.stream }
+    assert_same forgotten, connection.streams.find(1)
+    assert_equal 1, forgotten.id
+    assert_equal Stream::State::CLOSED, forgotten.state
+  end
+
+  def test_frames_on_forgotten_streams_in_turn_share_their_stand_ins
+    connection = Connection.new(IO::Stapled.new(IO::Memory.new, IO::Memory.new), :client)
+    # e.g. the DATA in flight on streams we reset, that the peer interleaves
+    ids = Array.new(3) do
+      connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL).tap(&.send_rst_stream(Error::Code::CANCEL)).id
+    end
+
+    stand_ins = ids.map { |id| connection.streams.find(id) }
+    ids.zip(stand_ins) do |id, stand_in|
+      assert_equal id, stand_in.id
+      assert stand_in.reset_sent?
+      assert_same stand_in, connection.streams.find(id)
+    end
+  end
+
+  def test_stand_in_forgets_the_reset_once_the_reset_stream_is_forgotten
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, "hello".to_slice)
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL).send_rst_stream(Error::Code::CANCEL)
+    assert connection.streams.find(1).reset_sent?
+
+    # remembers 1024 more reset streams than may be open at once: 100 for the
+    # peer, no limit announced for us
+    1124.times do
+      connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL).send_rst_stream(Error::Code::CANCEL)
+    end
+    refute connection.streams.find(1).reset_sent?
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::STREAM_CLOSED, error.code
+  end
+
+  def test_ignores_window_updates_on_forgotten_streams
+    connection, output, _ = server_closed_stream do |input|
+      # each would overflow the window of an open stream
+      2.times { write_frame(input, Frame::Type::WINDOW_UPDATE, Frame::Flags::None, 1, Bytes[0x7f, 0xff, 0xff, 0xff]) }
+    end
+
+    # WINDOW_UPDATE may follow the end of a stream, and isn't an error then
+    # (RFC 9113 sections 5.1 and 6.9)
+    2.times { assert_equal Frame::Type::WINDOW_UPDATE, connection.receive.not_nil!.type }
+    assert_empty reset_streams(output)
+  end
+
   # Receives a complete response to a GET request on stream 1, then gives
   # *input* to the block to append frames.
   private def client_closed_stream(&)
