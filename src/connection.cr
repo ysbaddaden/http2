@@ -300,17 +300,22 @@ module HTTP2
           size -= 5
         end
 
-        if stream.data? && !frame.flags.end_stream?
-          raise Error.protocol_error("INVALID trailer part")
-        end
+        # only a trailer section may follow the body, or the final response
+        # on a client (RFC 9113 section 8.1); the headers of a promised
+        # stream hold the promised request until its response
+        trailer = stream.data? || (@type.client? && stream.headers.has_key?(":status"))
 
         buffer = read_headers_payload(frame, size)
         interim = false
+        malformed = false
 
         begin
-          if stream.data?
+          if trailer
             hpack_decoder.decode(buffer, trailers = HTTP::Headers.new)
-            stream.trailers = trailers
+            # a trailer section ends the stream and has no pseudo-header
+            # fields, or the message is malformed (RFC 9113 section 8.1)
+            malformed = !frame.flags.end_stream? || trailers.any? { |name, _| name.starts_with?(':') }
+            stream.trailers = trailers unless malformed
           elsif @type.server?
             hpack_decoder.decode(buffer, stream.headers)
             validate_request_headers(stream.headers)
@@ -327,15 +332,16 @@ module HTTP2
           raise Error.compression_error
         end
 
-        if interim
-          # skips the interim response; one that ends the stream is malformed
-          # (RFC 9113 section 8.1.1)
-          if frame.flags.end_stream?
-            stream.send_rst_stream(Error::Code::PROTOCOL_ERROR)
-            stream.abort
-          end
+        if malformed || (interim && frame.flags.end_stream?)
+          # an interim response that ends the stream is malformed too (RFC
+          # 9113 section 8.1.1)
+          stream.send_rst_stream(Error::Code::PROTOCOL_ERROR)
+          stream.abort
           valid = false
-        elsif stream.data? || frame.flags.end_stream?
+        elsif interim
+          # skips the interim response
+          valid = false
+        elsif frame.flags.end_stream?
           # https://tools.ietf.org/html/rfc7540#section-8.1
           # https://tools.ietf.org/html/rfc7230#section-4.1.2
           valid = close_body(stream)

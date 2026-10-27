@@ -82,6 +82,55 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_raises(IO::Error) { stream.data.gets_to_end }
   end
 
+  def test_client_resets_stream_on_interim_response_after_the_final_response
+    _, stream, output = client_response_followed_by(
+      {Frame::Flags::None, HTTP::Headers{":status" => "100"}})
+
+    assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output)
+    assert_raises(IO::Error) { stream.data.gets_to_end }
+    assert_equal HTTP::Headers{":status" => "200"}, stream.headers
+  end
+
+  def test_client_resets_stream_on_trailers_with_a_status
+    _, stream, output = client_response_followed_by(
+      {Frame::Flags::END_STREAM, HTTP::Headers{":status" => "100", "x-checksum" => "abc"}},
+      data: "content")
+
+    assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output)
+    assert_nil stream.trailers?
+  end
+
+  def test_client_resets_stream_on_trailers_not_ending_the_stream
+    connection, stream, output = client_response_followed_by(
+      {Frame::Flags::None, HTTP::Headers{"x-checksum" => "abc"}},
+      data: "content")
+
+    assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output)
+    assert_nil stream.trailers?
+    refute connection.closed?
+  end
+
+  # Receives the final response on a client stream, then the DATA of
+  # *data* if any, then a header block with the given flags and headers,
+  # that the connection must reject: `Connection#receive` returns nil.
+  private def client_response_followed_by(headers : {Frame::Flags, HTTP::Headers}, data : String? = nil)
+    encoder = HPACK::Encoder.new(huffman: false)
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      encoder.encode(HTTP::Headers{":status" => "200"}))
+    write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, data.to_slice) if data
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | headers[0], 1, encoder.encode(headers[1]))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    assert_same stream, connection.receive.try(&.stream)
+    connection.receive if data
+    assert_nil connection.receive
+    {connection, stream, output}
+  end
+
   def test_client_respects_server_advertised_max_concurrent_streams
     # max_concurrent_streams=1
     settings_frame = {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 3, 0, 0, 0, 1]}
