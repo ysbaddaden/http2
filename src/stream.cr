@@ -230,7 +230,9 @@ module HTTP2
     # server-push request by closing the promised stream immediately.
     #
     # Returns the promised stream, or `nil` if the client configured
-    # SETTINGS_ENABLE_PUSH to be false (true by default).
+    # SETTINGS_ENABLE_PUSH to be false (true by default). Raises `Error` if the
+    # stream is neither open nor half-closed (remote), for example once the
+    # response ended or the client reset the stream.
     #
     # You may send multiple PUSH_PROMISE frames on an expected stream, but you
     # may send only one per resource to push.
@@ -238,12 +240,17 @@ module HTTP2
       unless connection.remote_settings.enable_push
         return
       end
-      connection.streams.create(state: Stream::State::RESERVED_LOCAL).tap do |stream|
-        io = IO::Memory.new
-        io.write_bytes(stream.id.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)
-        payload = connection.hpack_encoder.encode(headers, writer: io)
-        connection.send(headers_frames(Frame::Type::PUSH_PROMISE, flags, payload))
-      end
+      connection.send_push_promise(self, headers, flags)
+    end
+
+    # Encodes *headers* into a PUSH_PROMISE frame that promises *promised*,
+    # possibly followed by CONTINUATION frames. Must be called while holding
+    # the connection lock, like `#headers_frames`.
+    protected def push_promise_frames(promised : Stream, headers : HTTP::Headers, flags : Frame::Flags) : Array(Frame)
+      io = IO::Memory.new
+      io.write_bytes(promised.id.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)
+      payload = connection.hpack_encoder.encode(headers, writer: io)
+      headers_frames(Frame::Type::PUSH_PROMISE, flags, payload)
     end
 
     private def headers_frames(type : Frame::Type, flags, payload) : Array(Frame)
@@ -345,8 +352,9 @@ module HTTP2
     # Closes the stream. Optionally reporting an error status.
     def send_rst_stream(error_code : Error::Code) : Nil
       # the peer may have sent frames before it receives the RST_STREAM
-      # (RFC 9113 section 5.1)
-      @reset_sent = true if state.open? || state.half_closed_local?
+      # (RFC 9113 section 5.1), for example the response on a stream it
+      # promised
+      @reset_sent = true if state.open? || state.half_closed_local? || state.reserved_remote?
 
       io = IO::Memory.new(RST_STREAM_FRAME_SIZE)
       io.write_bytes(error_code.value.to_u32, IO::ByteFormat::BigEndian)
@@ -389,25 +397,31 @@ module HTTP2
         end
 
       when State::RESERVED_LOCAL
-        error!(receiving) if receiving
-
+        # we may send HEADERS and the peer WINDOW_UPDATE; either may reset
+        # the stream (RFC 9113 section 5.1)
         case frame.type
         when Frame::Type::HEADERS
-          self.state = State::HALF_CLOSED_LOCAL
+          error!(receiving) if receiving
+          self.state = frame.flags.end_stream? ? State::CLOSED : State::HALF_CLOSED_REMOTE
         when Frame::Type::RST_STREAM
           self.state = State::CLOSED
+        when Frame::Type::WINDOW_UPDATE
+          error!(receiving) unless receiving
         else
           error!(receiving)
         end
 
       when State::RESERVED_REMOTE
-        error!(receiving) unless receiving
-
+        # the peer may send HEADERS and we WINDOW_UPDATE; either may reset
+        # the stream (RFC 9113 section 5.1)
         case frame.type
         when Frame::Type::HEADERS
-          self.state = State::HALF_CLOSED_REMOTE
+          error!(receiving) unless receiving
+          self.state = frame.flags.end_stream? ? State::CLOSED : State::HALF_CLOSED_LOCAL
         when Frame::Type::RST_STREAM
           self.state = State::CLOSED
+        when Frame::Type::WINDOW_UPDATE
+          error!(receiving) if receiving
         else
           error!(receiving)
         end

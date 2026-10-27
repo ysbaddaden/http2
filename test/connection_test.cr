@@ -1239,6 +1239,302 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_empty stream.data.gets_to_end
   end
 
+  private PUSHED = HTTP::Headers{
+    ":method"    => "GET",
+    ":scheme"    => "http",
+    ":authority" => "example.com",
+    ":path"      => "/style.css",
+    "x-trace"    => "1",
+  }
+
+  def test_client_rejects_push_promise_once_the_server_acknowledged_disabled_push
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::SETTINGS, Frame::Flags::END_STREAM, 0) # ACK
+    write_push_promise(input, 1, 2, HPACK::Encoder.new(huffman: false).encode(PUSHED))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    connection.write_settings # SETTINGS_ENABLE_PUSH=0
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+
+    # RFC 9113 sections 6.5.2 and 8.4
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
+
+  def test_client_accepts_push_promise_once_it_enabled_push_again
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::SETTINGS, Frame::Flags::END_STREAM, 0) # ACK
+    write_push_promise(input, 1, 2, HPACK::Encoder.new(huffman: false).encode(PUSHED))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    connection.write_settings # SETTINGS_ENABLE_PUSH=0
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+
+    # the server may push once it applied the new SETTINGS, before it
+    # acknowledges them
+    connection.local_settings.enable_push = true
+    connection.send_settings
+    assert_equal Frame::Type::PUSH_PROMISE, connection.receive.try(&.type)
+  end
+
+  def test_client_refuses_push_promise_until_the_server_acknowledged_disabled_push
+    encoder = HPACK::Encoder.new(indexing: HPACK::Indexing::ALWAYS, huffman: false)
+    input = IO::Memory.new
+    write_push_promise(input, 1, 2, encoder.encode(PUSHED))
+    # sent by the server before it received the RST_STREAM
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2,
+      encoder.encode(HTTP::Headers{":status" => "200", "content-type" => "text/css"}))
+    write_frame(input, Frame::Type::DATA, Frame::Flags::END_STREAM, 2, "body {}".to_slice)
+    # refers to the dynamic table entries the header blocks above added
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      encoder.encode(HTTP::Headers{":status" => "200", "content-type" => "text/css", "x-trace" => "1"}))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    connection.write_settings # SETTINGS_ENABLE_PUSH=0
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    3.times { assert_nil connection.receive }
+    assert_equal [{2, Error::Code::REFUSED_STREAM}], reset_streams(output)
+    assert_empty stream.headers
+
+    frame = connection.receive.not_nil!
+    assert_same stream, frame.stream
+    assert_equal HTTP::Headers{":status" => "200", "content-type" => "text/css", "x-trace" => "1"}, stream.headers
+  end
+
+  def test_client_reserves_the_promised_stream_with_the_promised_request
+    encoder = HPACK::Encoder.new(huffman: false)
+    input = IO::Memory.new
+    write_push_promise(input, 1, 2, encoder.encode(PUSHED))
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2,
+      encoder.encode(HTTP::Headers{":status" => "200"}))
+    write_frame(input, Frame::Type::DATA, Frame::Flags::END_STREAM, 2, "body {}".to_slice)
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    connection.local_settings.enable_push = true
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    frame = connection.receive.not_nil!
+    assert_same stream, frame.stream
+    promised = connection.streams.find(2)
+    assert_same promised, frame.promised_stream
+    assert_equal Stream::State::RESERVED_REMOTE, promised.state
+    assert_equal PUSHED, promised.headers
+    assert_empty stream.headers
+    assert_equal Stream::State::HALF_CLOSED_LOCAL, stream.state
+
+    # the pushed response (RFC 9113 sections 5.1 and 8.4.2)
+    connection.receive
+    assert_equal Stream::State::HALF_CLOSED_LOCAL, promised.state
+    assert_equal "200", promised.headers[":status"]
+    connection.receive
+    assert_equal Stream::State::CLOSED, promised.state
+    assert_equal "body {}", promised.data.gets_to_end
+  end
+
+  def test_client_accepts_push_promise_on_an_open_stream
+    input = IO::Memory.new
+    write_push_promise(input, 1, 2, HPACK::Encoder.new(huffman: false).encode(PUSHED))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    connection.local_settings.enable_push = true
+    # still sending the request body
+    stream = connection.streams.create(state: Stream::State::OPEN)
+
+    frame = connection.receive.not_nil!
+    assert_same stream, frame.stream
+    assert_equal Stream::State::OPEN, stream.state
+    assert_equal Stream::State::RESERVED_REMOTE, connection.streams.find(2).state
+  end
+
+  def test_client_refuses_push_promise_in_flight_on_a_stream_it_reset
+    encoder = HPACK::Encoder.new(indexing: HPACK::Indexing::ALWAYS, huffman: false)
+    input = IO::Memory.new
+    # sent by the server before it received the RST_STREAM
+    write_push_promise(input, 1, 2, encoder.encode(PUSHED))
+    # refers to the dynamic table entry the PUSH_PROMISE added
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 3,
+      encoder.encode(HTTP::Headers{":status" => "200", "x-trace" => "1"}))
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    connection.local_settings.enable_push = true
+    stream1 = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    stream3 = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    stream1.send_rst_stream(Error::Code::CANCEL)
+
+    # RFC 9113 sections 5.1 and 6.6
+    assert_nil connection.receive
+    assert_equal [{1, Error::Code::CANCEL}, {2, Error::Code::REFUSED_STREAM}], reset_streams(output)
+    assert connection.streams.find(2).state.closed?
+
+    frame = connection.receive.not_nil!
+    assert_same stream3, frame.stream
+    assert_equal "1", stream3.headers["x-trace"]
+  end
+
+  def test_client_rejects_push_promise_on_a_closed_stream_it_did_not_reset
+    encoder = HPACK::Encoder.new(huffman: false)
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      encoder.encode(HTTP::Headers{":status" => "200"}))
+    write_push_promise(input, 1, 2, encoder.encode(PUSHED))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    connection.local_settings.enable_push = true
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+
+    # RFC 9113 section 6.6
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
+
+  def test_client_rejects_push_promise_of_a_stream_the_server_cant_open
+    input = IO::Memory.new
+    write_push_promise(input, 1, 3, HPACK::Encoder.new(huffman: false).encode(PUSHED))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    connection.local_settings.enable_push = true
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    # RFC 9113 sections 5.1.1 and 6.6
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
+
+  def test_client_rejects_push_promise_too_short_for_the_promised_stream_id
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::PUSH_PROMISE, Frame::Flags::END_HEADERS, 1, Bytes[0, 2])
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    connection.local_settings.enable_push = true
+    connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::FRAME_SIZE_ERROR, error.code
+  end
+
+  def test_server_rejects_push_promise
+    input = IO::Memory.new
+    write_push_promise(input, 1, 2, HPACK::Encoder.new(huffman: false).encode(PUSHED))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :server)
+
+    # RFC 9113 section 8.4
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
+
+  def test_server_sends_the_pushed_response_on_the_promised_stream
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      HPACK::Encoder.new(huffman: false).encode(REQUEST))
+    input.rewind
+    output = IO::Memory.new
+    server = Connection.new(IO::Stapled.new(input, output), :server)
+    stream = server.receive.not_nil!.stream
+
+    promised = stream.send_push_promise(PUSHED).not_nil!
+    assert_equal 2, promised.id
+    assert_equal Stream::State::RESERVED_LOCAL, promised.state
+    promised.send_headers(HTTP::Headers{":status" => "200"})
+    assert_equal Stream::State::HALF_CLOSED_REMOTE, promised.state
+    promised.send_data("body {}", Frame::Flags::END_STREAM)
+    assert_equal Stream::State::CLOSED, promised.state
+
+    output.rewind
+    client = Connection.new(output, :client)
+    client.local_settings.enable_push = true
+    client.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    frames = Array.new(3) { client.receive.not_nil! }
+    assert_equal [1, 2, 2], frames.map(&.stream.id)
+    assert_equal "body {}", frames.last.stream.data.gets_to_end
+  end
+
+  def test_server_accepts_the_client_refusing_a_push
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      HPACK::Encoder.new(huffman: false).encode(REQUEST))
+    write_frame(input, Frame::Type::WINDOW_UPDATE, Frame::Flags::None, 2, Bytes[0, 0, 0x40, 0])
+    write_frame(input, Frame::Type::RST_STREAM, Frame::Flags::None, 2, Bytes[0, 0, 0, 7]) # REFUSED_STREAM
+    input.rewind
+    server = Connection.new(IO::Stapled.new(input, IO::Memory.new), :server)
+    stream = server.receive.not_nil!.stream
+    promised = stream.send_push_promise(PUSHED).not_nil!
+
+    # RFC 9113 section 5.1
+    server.receive
+    assert_equal Stream::State::RESERVED_LOCAL, promised.state
+    assert_equal Error::Code::REFUSED_STREAM, server.receive.try(&.error)
+    assert_equal Stream::State::CLOSED, promised.state
+  end
+
+  def test_send_push_promise_requires_an_open_stream
+    _, output, stream = server_closed_stream { }
+
+    # RFC 9113 section 6.6
+    assert_raises(Error) { stream.send_push_promise(PUSHED) }
+    assert_empty push_promises(output)
+  end
+
+  def test_send_push_promise_sends_promised_streams_in_order
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      HPACK::Encoder.new(huffman: false).encode(REQUEST))
+    input.rewind
+    output = IO::Memory.new
+    server = PausingConnection.new(IO::Stapled.new(input, output), :server)
+    stream = server.receive.not_nil!.stream
+
+    pushed = Channel(Stream? | Exception).new(1)
+    spawn do
+      pushed.send(stream.send_push_promise(PUSHED))
+    rescue ex
+      pushed.send(ex)
+    end
+    select
+    when server.paused.receive
+    when timeout(1.second)
+      flunk "the first PUSH_PROMISE wasn't encoded"
+    end
+
+    # another push while the first one is being encoded
+    second = stream.send_push_promise(PUSHED).not_nil!
+    first = pushed.receive
+    raise first if first.is_a?(Exception)
+    assert_equal [2, 4], [first.try(&.id), second.id]
+    # RFC 9113 section 5.1.1
+    assert_equal [{1, 2}, {1, 4}], push_promises(output)
+  end
+
+  # Pauses the first time a header block is encoded, as if another fiber
+  # ran meanwhile; then signals `#paused`.
+  private class PausingConnection < Connection
+    getter paused = Channel(Nil).new(1)
+    @pause = true
+
+    protected def hpack_encoder
+      if @pause
+        @pause = false
+        @paused.send(nil)
+        sleep 50.milliseconds
+      end
+      super
+    end
+  end
+
+  # Writes a PUSH_PROMISE frame on *stream_id* that promises *promised_id*.
+  private def write_push_promise(io, stream_id, promised_id, header_block)
+    payload = IO::Memory.new
+    payload.write_bytes(promised_id.to_u32, IO::ByteFormat::BigEndian)
+    payload.write(header_block)
+    write_frame(io, Frame::Type::PUSH_PROMISE, Frame::Flags::END_HEADERS, stream_id, payload.to_slice)
+  end
+
   # Yields to other fibers on every write, as a socket would when its buffer
   # is full.
   private class YieldingWriter < IO::Memory
@@ -1540,6 +1836,26 @@ class HTTP2::ConnectionTest < Minitest::Test
       end
     end
     resets
+  end
+
+  # Parses the PUSH_PROMISE frames written to *io* as {stream_id,
+  # promised_stream_id}.
+  private def push_promises(io : IO::Memory)
+    io.rewind
+    promises = [] of {Int32, Int32}
+    while io.pos < io.size
+      header = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+      size, type = header >> 8, header & 0xff
+      io.skip(1) # flags
+      stream_id = io.read_bytes(UInt32, IO::ByteFormat::BigEndian).to_i32 & 0x7fffffff
+      if type == Frame::Type::PUSH_PROMISE.value
+        promises << {stream_id, io.read_bytes(UInt32, IO::ByteFormat::BigEndian).to_i32 & 0x7fffffff}
+        io.skip(size - 4)
+      else
+        io.skip(size)
+      end
+    end
+    promises
   end
 
   # Parses the GOAWAY frames written to *io* as {last_stream_id, error_code}.

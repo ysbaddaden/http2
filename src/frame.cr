@@ -66,6 +66,12 @@ module HTTP2
     getter last_stream_id : Int32 = 0
     protected setter last_stream_id : Int32
 
+    # The stream a received PUSH_PROMISE frame reserved.
+    getter! promised_stream : Stream
+
+    protected def promised_stream=(@promised_stream : Stream)
+    end
+
     @size : Int32?
 
     # :nodoc:

@@ -57,6 +57,13 @@ module HTTP2
 
     @data_buffer : Bytes? = nil
 
+    # The SETTINGS_ENABLE_PUSH value of each SETTINGS frame we sent that the
+    # peer didn't acknowledge yet, oldest first, and the value it applied
+    # last: the peer acknowledges SETTINGS frames in order, once it applied
+    # them (RFC 9113 section 6.5.3).
+    @unacknowledged_enable_push = Deque(Bool).new
+    @acknowledged_enable_push = DEFAULT_ENABLE_PUSH
+
     # The size of the connection flow-control window we keep for the peer to
     # send DATA (RFC 9113 section 6.9): once less than half of it is
     # available, the window grows by that size. Defaults to `nil`: the local
@@ -141,7 +148,12 @@ module HTTP2
     #
     # Returns `nil` when the frame was ignored, for example DATA received on a
     # stream after we reset it or an interim (1xx) response on a client, or
-    # when it made the request or response malformed and the stream was reset.
+    # when it made the request or response malformed and the stream was reset,
+    # or a PUSH_PROMISE whose promised stream we refused.
+    #
+    # A PUSH_PROMISE frame is reported on the stream it was sent on; the
+    # promised stream, with the promised request headers, is
+    # `Frame#promised_stream`.
     def receive : Frame?
       frame = read_frame_header
       stream = frame.stream
@@ -157,7 +169,9 @@ module HTTP2
         end
       end
 
-      stream.receiving(frame)
+      # a PUSH_PROMISE frame reserves the promised stream, the stream it's
+      # sent on stays as it is (RFC 9113 section 6.6)
+      stream.receiving(frame) unless frame.type == Frame::Type::PUSH_PROMISE
 
       case frame.type
       when Frame::Type::DATA
@@ -170,7 +184,7 @@ module HTTP2
 
       when Frame::Type::PUSH_PROMISE
         raise Error.protocol_error if stream.id == 0
-        read_push_promise_frame(frame)
+        return unless read_push_promise_frame(frame)
 
       when Frame::Type::PRIORITY
         raise Error.protocol_error if stream.id == 0
@@ -480,14 +494,64 @@ module HTTP2
       end
     end
 
-    private def read_push_promise_frame(frame)
+    # Reserves the promised stream and decodes the promised request into its
+    # headers (RFC 9113 sections 6.6 and 8.4). Only a server may push, on a
+    # stream that is open or half-closed (local), unless we disabled push and
+    # it acknowledged that (RFC 9113 section 6.5.2).
+    #
+    # The server may have sent the frame before it received the RST_STREAM we
+    # sent on the stream: the promised stream is still reserved and the
+    # header block decoded, to keep the HPACK decoder in sync, then we refuse
+    # the promised stream (RFC 9113 section 5.1). We refuse it as well while
+    # the server didn't acknowledge that we disabled push. Returns false
+    # then.
+    private def read_push_promise_frame(frame) : Bool
       stream = frame.stream
 
+      raise Error.protocol_error("UNEXPECTED PUSH_PROMISE frame") if @type.server?
+      raise Error.protocol_error("PUSH disabled") if push_disabled?
+
+      reset = stream.reset_sent? && stream.state.closed?
+      unless reset || stream.state.open? || stream.state.half_closed_local?
+        raise Error.protocol_error("STREAM #{stream.id} is #{stream.state}")
+      end
+
       read_padded(frame) do |size|
+        raise Error.frame_size_error if size < 4
         _, promised_stream_id = read_stream_id
-        streams.find(promised_stream_id).receiving(frame)
+
+        # the promised stream must be a new stream of the server (RFC 9113
+        # section 5.1.1)
+        promised = streams.find(promised_stream_id) if @type.peer.initiates?(promised_stream_id)
+        unless promised && promised.state.idle?
+          raise Error.protocol_error("INVALID promised stream_id ##{promised_stream_id}")
+        end
+        promised.receiving(frame)
+        frame.promised_stream = promised
+
         buffer = read_headers_payload(frame, size - 4)
-        hpack_decoder.decode(buffer, stream.headers)
+        begin
+          hpack_decoder.decode(buffer, promised.headers)
+        rescue ex : HPACK::Error
+          Log.trace { "HPACK::Error: #{ex.message}" }
+          raise Error.compression_error
+        end
+      end
+
+      # another fiber may have reset the stream meanwhile
+      if stream.state.closed? || !local_settings.enable_push
+        frame.promised_stream.send_rst_stream(Error::Code::REFUSED_STREAM)
+        return false
+      end
+
+      true
+    end
+
+    # Returns true if we disabled push, the peer acknowledged it, and we
+    # didn't enable push again since.
+    private def push_disabled? : Bool
+      @mutex.to_reference.synchronize do
+        !@acknowledged_enable_push && !@unacknowledged_enable_push.includes?(true)
       end
     end
 
@@ -514,7 +578,14 @@ module HTTP2
 
     private def read_settings_frame(frame)
       raise Error.frame_size_error unless frame.size % 6 == 0
-      return if frame.flags.ack?
+
+      if frame.flags.ack?
+        @mutex.to_reference.synchronize do
+          enable_push = @unacknowledged_enable_push.shift?
+          @acknowledged_enable_push = enable_push unless enable_push.nil?
+        end
+        return
+      end
 
       remote_settings.parse(io, frame.size // 6) do |id, value|
         Log.trace { "  #{id}=#{value}" }
@@ -628,6 +699,23 @@ module HTTP2
       synchronize { write(stream.headers_frames(headers, flags)) }
     end
 
+    # Reserves a stream and sends the PUSH_PROMISE frame that promises it on
+    # *stream*, possibly followed by CONTINUATION frames, at once: the
+    # promised stream identifiers go on the wire in increasing order, and the
+    # header blocks in the order they're encoded (RFC 9113 sections 4.3 and
+    # 5.1.1). *stream* must be open or half-closed (remote) (RFC 9113 section
+    # 6.6).
+    protected def send_push_promise(stream : Stream, headers : HTTP::Headers, flags : Frame::Flags) : Stream
+      synchronize do
+        unless stream.state.open? || stream.state.half_closed_remote?
+          raise Error.internal_error("STREAM #{stream.id} is #{stream.state}")
+        end
+        streams.create(state: Stream::State::RESERVED_LOCAL).tap do |promised|
+          write(stream.push_promise_frames(promised, headers, flags))
+        end
+      end
+    end
+
     private def synchronize(&)
       @mutex.to_reference.synchronize { yield }
     rescue ex
@@ -642,6 +730,7 @@ module HTTP2
     # frame. Sending changes to `#local_settings` once the connection
     # established MUST use `#send_settings` instead!
     def write_settings : Nil
+      @unacknowledged_enable_push << local_settings.enable_push
       write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), payload: local_settings.to_payload)
 
       # the connection window starts at 65535 bytes whatever the settings
@@ -655,7 +744,10 @@ module HTTP2
 
     # Sends a SETTINGS frame for the current `#local_settings` values.
     def send_settings : Nil
-      send Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), payload: local_settings.to_payload)
+      synchronize do
+        @unacknowledged_enable_push << local_settings.enable_push
+        write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), payload: local_settings.to_payload)
+      end
     end
 
     private def write(frames : Array(Frame)) : Nil
