@@ -813,6 +813,68 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_empty reset_streams(output)
   end
 
+  def test_closing_the_body_doesnt_wait_for_the_data_frame_being_received
+    with_data_frame_half_received do |connection, stream|
+      stream.data.close
+    end
+  end
+
+  def test_closing_the_connection_doesnt_wait_for_the_data_frame_being_received
+    with_data_frame_half_received do |connection, stream|
+      connection.close
+    end
+  end
+
+  # The peer sent half of a DATA frame of 100 bytes on stream 1, and the
+  # connection waits for the rest in `receive`: the block must return at
+  # once. Then the rest arrives: its payload is dropped, and the next frame
+  # is received.
+  private def with_data_frame_half_received(&block : Connection, Stream ->) : Nil
+    local, remote = IO::Stapled.pipe
+    connection = Connection.new(local, :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+
+    received = Channel(Frame? | Exception).new(2)
+    spawn do
+      2.times { received.send(connection.receive) }
+    rescue ex
+      received.send(ex)
+    end
+
+    frame = IO::Memory.new
+    write_frame(frame, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(100))
+    remote.write(frame.to_slice[0, 9 + 50])
+    remote.flush
+    sleep 50.milliseconds # let the connection wait for the rest of the frame
+
+    done = Channel(Nil).new(1)
+    spawn do
+      block.call(connection, stream)
+      done.send(nil)
+    end
+    select
+    when done.receive
+    when timeout(1.second)
+      flunk "closing waits for the rest of the DATA frame"
+    end
+
+    remote.write(frame.to_slice[9 + 50..])
+    write_frame(remote, Frame::Type::PING, Frame::Flags::None, 0, Bytes.new(8))
+    remote.flush
+    frames = Array.new(2) do
+      select
+      when value = received.receive
+        raise value if value.is_a?(Exception)
+        value
+      when timeout(1.second)
+        flunk "the connection doesn't receive frames anymore"
+      end
+    end
+    assert_equal Frame::Type::PING, frames.last.try(&.type)
+  ensure
+    remote.try(&.close)
+  end
+
   def test_accepts_frames_on_a_stream_reset_while_receiving_them
     connection = Connection.new(IO::Stapled.new(IO::Memory.new, IO::Memory.new), :client)
     # another fiber reset the stream once the connection checked it but

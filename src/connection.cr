@@ -55,6 +55,8 @@ module HTTP2
     private getter io : IO
     getter streams : Streams
 
+    @data_buffer : Bytes? = nil
+
     # The size of the connection flow-control window we keep for the peer to
     # send DATA (RFC 9113 section 6.9): once less than half of it is
     # available, the window grows by that size. Defaults to `nil`: the local
@@ -255,7 +257,7 @@ module HTTP2
 
       read_padded(frame) do |size|
         # skipped if another fiber closed the body meanwhile
-        next unless stream.data.copy_from(io, size)
+        next unless stream.data.copy_from(io, size, data_buffer)
 
         if frame.flags.end_stream?
           valid = close_body(stream)
@@ -353,6 +355,12 @@ module HTTP2
     # Returns nil if the value is invalid or too large.
     private def parse_content_length(value : String) : UInt64?
       value.to_u64?(whitespace: false) if value.each_char.all?(&.ascii_number?)
+    end
+
+    # The buffer DATA is read into before it's copied to a stream's body.
+    # Only the fiber that receives frames uses it.
+    private def data_buffer : Bytes
+      @data_buffer ||= Bytes.new(DEFAULT_MAX_FRAME_SIZE)
     end
 
     # Ignores a DATA frame received on a stream we reset, that the peer sent

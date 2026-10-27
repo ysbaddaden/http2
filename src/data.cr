@@ -55,21 +55,30 @@ module HTTP2
 
     # Buffers *size* bytes of DATA from *io*. Returns false if the body was
     # closed, for example by another fiber that reset the stream while the
-    # DATA was being received: the bytes are skipped then.
-    protected def copy_from(io : IO, size : Int32) : Bool
+    # DATA was being received: the rest of the bytes is skipped then.
+    #
+    # Reads the bytes into *scratch* first, then copies them into the
+    # buffer: the buffer isn't locked while the peer sends them, so a fiber
+    # that closes the body doesn't wait for a peer that stalls in the
+    # middle of a frame.
+    protected def copy_from(io : IO, size : Int32, scratch : Bytes) : Bool
       @size += size
       if (buffer.capacity - buffer.size) < size
         raise ArgumentError.new
       end
-      begin
-        # the buffer can't be closed once the copy started (it holds the
-        # buffer's lock) and the flow-control window leaves room for the
-        # bytes: a closed buffer raises before any byte is read
-        buffer.copy_from(io, size)
-      rescue ex : IO::Error
-        raise ex unless buffer.closed?(:read) || buffer.closed?(:write)
-        io.skip(size)
-        return false
+      while size > 0
+        chunk = scratch[0, Math.min(size, scratch.size)]
+        io.read_fully(chunk)
+        size -= chunk.size
+        begin
+          # the flow-control window leaves room for the bytes: a closed
+          # buffer raises before any byte is copied
+          buffer.write(chunk)
+        rescue ex : IO::Error
+          raise ex unless buffer.closed?(:read) || buffer.closed?(:write)
+          io.skip(size)
+          return false
+        end
       end
       true
     end
