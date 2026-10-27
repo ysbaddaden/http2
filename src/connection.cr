@@ -242,16 +242,24 @@ module HTTP2
       frame
     end
 
+    # The whole DATA frame counts against the flow-control windows, the Pad
+    # Length field and the padding included (RFC 9113 section 6.9.1). The
+    # body gives the stream window back as it's read, but the padding never
+    # reaches the body: it goes back to the stream at once, unless the
+    # stream ended, so it can't exhaust the stream window.
     private def read_data_frame(frame) : Bool
       stream = frame.stream
       valid = true
 
+      consume_inbound_window_size(frame.size)
+
       read_padded(frame) do |size|
-        consume_inbound_window_size(size)
         stream.data.copy_from(io, size)
 
         if frame.flags.end_stream?
           valid = close_body(stream)
+        elsif (padding = frame.size - size) > 0
+          stream.send_window_update_frame(padding)
         end
       end
 
@@ -348,10 +356,11 @@ module HTTP2
 
     # Ignores a DATA frame received on a stream we reset, that the peer sent
     # before it received the RST_STREAM. It still counts against the
-    # connection window (RFC 9113 sections 5.1 and 6.9).
+    # connection window, padding included, and its pad length must fit in
+    # the frame (RFC 9113 sections 5.1, 6.1 and 6.9).
     private def ignore_data_frame(frame) : Nil
       consume_inbound_window_size(frame.size)
-      io.skip(frame.size)
+      read_padded(frame) { |size| io.skip(size) }
     end
 
     # Ignores a HEADERS frame received on a stream we reset, that the peer sent

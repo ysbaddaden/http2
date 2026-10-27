@@ -410,6 +410,67 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal [{0, MAXIMUM_WINDOW_SIZE - (DEFAULT_INITIAL_WINDOW_SIZE - 16384)}], window_updates(output)
   end
 
+  def test_padded_data_counts_against_both_windows
+    input = IO::Memory.new
+    # 200 frames of 257 bytes: 1 byte of data, the Pad Length field and 255
+    # bytes of padding
+    200.times { write_padded_data_frame(input, 1, Bytes.new(1), 255) }
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    200.times { connection.receive }
+
+    # the peer charged 200 * 257 bytes to both windows (RFC 9113 section
+    # 6.9.1): the connection window passed the half-way mark, and the
+    # padding goes back to the stream at once, since it isn't read
+    updates = window_updates(output)
+    assert_equal [{0, DEFAULT_INITIAL_WINDOW_SIZE}], updates.select { |(id, _)| id == 0 }
+    assert_equal 200 * 256, updates.select { |(id, _)| id == 1 }.sum(&.[1])
+    assert_equal 200, stream.data.size
+  end
+
+  def test_padding_of_data_ending_the_stream_isnt_given_back
+    input = IO::Memory.new
+    write_padded_data_frame(input, 1, "hello".to_slice, 10)
+    write_padded_data_frame(input, 1, "world".to_slice, 20, Frame::Flags::END_STREAM)
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    2.times { connection.receive }
+
+    # the Pad Length field and the padding of the first frame; the peer
+    # can't send on the stream anymore after the second one
+    assert_equal [{1, 11}], window_updates(output)
+    assert_equal "helloworld", stream.data.gets_to_end
+  end
+
+  def test_rejects_invalid_pad_length_on_ignored_data
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{":status" => "200"}))
+    # Pad Length 10 in a frame of 6 bytes
+    write_frame(input, Frame::Type::DATA, Frame::Flags::PADDED, 1, Bytes[10, 0, 0, 0, 0, 0])
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, IO::Memory.new), :client)
+    stream = connection.streams.create(state: Stream::State::HALF_CLOSED_LOCAL)
+    connection.receive
+    stream.send_rst_stream(Error::Code::CANCEL)
+
+    # RFC 9113 section 6.1
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
+
+  private def write_padded_data_frame(io, stream_id, data, pad_size, flags = Frame::Flags::None)
+    payload = IO::Memory.new
+    payload.write_byte(pad_size.to_u8)
+    payload.write(data)
+    payload.write(Bytes.new(pad_size))
+    write_frame(io, Frame::Type::DATA, flags | Frame::Flags::PADDED, stream_id, payload.to_slice)
+  end
+
   def test_received_rst_stream_releases_body_reader
     headers_frame = {
       Frame::Type::HEADERS,
