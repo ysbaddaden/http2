@@ -82,6 +82,34 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_raises(IO::Error) { stream.data.gets_to_end }
   end
 
+  def test_accepts_frames_up_to_the_local_max_frame_size
+    connection = new_connection(:client, large_headers_frame)
+    connection.local_settings.max_frame_size = 32_768
+    connection.local_settings.max_header_list_size = 32_768
+
+    frame = connection.receive.not_nil!
+    assert_equal Frame::Type::HEADERS, frame.type
+    assert_equal 19_000, frame.stream.headers["x-large"].bytesize
+  end
+
+  def test_rejects_frames_above_the_local_max_frame_size
+    connection = new_connection(:client, large_headers_frame)
+    # the peer accepts larger frames, which doesn't allow it to send them
+    connection.remote_settings.max_frame_size = 32_768
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::FRAME_SIZE_ERROR, error.code
+  end
+
+  # A HEADERS frame between the default and a raised max frame size (RFC
+  # 9113 section 4.2).
+  private def large_headers_frame
+    headers = HTTP::Headers{":status" => "200", "x-large" => "x" * 19_000}
+    payload = HPACK::Encoder.new(huffman: false).encode(headers)
+    assert payload.size > DEFAULT_MAX_FRAME_SIZE
+    {Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 2, payload}
+  end
+
   def test_client_resets_stream_on_interim_response_after_the_final_response
     _, stream, output = client_response_followed_by(
       {Frame::Flags::None, HTTP::Headers{":status" => "100"}})

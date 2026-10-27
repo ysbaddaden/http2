@@ -244,7 +244,9 @@ module HTTP2
       flags = Frame::Flags.new(read_byte)
       _, stream_id = read_stream_id
 
-      if size > remote_settings.max_frame_size
+      # the peer must not send a frame larger than our SETTINGS_MAX_FRAME_SIZE
+      # (RFC 9113 section 4.2)
+      if size > local_settings.max_frame_size
         raise Error.frame_size_error
       end
 
