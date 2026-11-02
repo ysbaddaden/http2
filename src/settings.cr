@@ -64,7 +64,7 @@ module HTTP2
     end
 
     def initial_window_size=(size : Int)
-      raise Error.flow_control_error unless 0 <= size < MAXIMUM_WINDOW_SIZE
+      raise Error.flow_control_error unless 0 <= size <= MAXIMUM_WINDOW_SIZE
       @initial_window_size = size.to_u32
     end
 
@@ -73,7 +73,7 @@ module HTTP2
     end
 
     def max_frame_size=(size : Int)
-      unless MINIMUM_FRAME_SIZE <= size < MAXIMUM_FRAME_SIZE
+      unless MINIMUM_FRAME_SIZE <= size <= MAXIMUM_FRAME_SIZE
         raise Error.protocol_error("INVALID frame size: #{size}")
       end
       @max_frame_size = size.to_u32

@@ -158,6 +158,13 @@ module HTTP2
       frame = read_frame_header
       stream = frame.stream
 
+      # an unknown frame type is ignored, on any stream, without changing
+      # its state (RFC 9113 sections 4.1 and 5.5)
+      unless Frame::Type.valid?(frame.type)
+        read_unsupported_frame(frame)
+        return frame
+      end
+
       if stream.reset_sent? && stream.state.closed?
         case frame.type
         when Frame::Type::DATA
@@ -211,16 +218,17 @@ module HTTP2
 
       when Frame::Type::CONTINUATION
         raise Error.protocol_error("UNEXPECTED CONTINUATION frame")
-
-      else
-        read_unsupported_frame(frame)
       end
 
       frame
     end
 
+    # The padding of the frame `#read_padded` reads, that is still to skip.
+    @padding = 0
+
     # Reads padding information and yields the actual frame size without the
-    # padding size. Eventually skips the padding.
+    # padding size. Eventually skips the padding, unless the block did (see
+    # `#skip_padding`).
     private def read_padded(frame, &)
       size = frame.size
 
@@ -231,10 +239,15 @@ module HTTP2
 
       raise Error.protocol_error("INVALID pad length") if size < 0
 
+      @padding = pad_size.to_i32 if pad_size
       yield size
+      skip_padding
+    end
 
-      if pad_size
-        io.skip(pad_size)
+    private def skip_padding : Nil
+      if (padding = @padding) > 0
+        @padding = 0
+        io.skip(padding)
       end
     end
 
@@ -251,11 +264,16 @@ module HTTP2
       end
 
       frame_type = Frame::Type.new(type.to_i)
-      unless frame_type.priority? || streams.valid?(stream_id, frame_type)
-        raise Error.protocol_error("INVALID stream_id ##{stream_id}")
+      if Frame::Type.valid?(frame_type)
+        unless frame_type.priority? || streams.valid?(stream_id, frame_type)
+          raise Error.protocol_error("INVALID stream_id ##{stream_id}")
+        end
+        stream = streams.find(stream_id, consume: !frame_type.priority?)
+      else
+        # an unknown frame type opens no stream: reported on a stand-in
+        # that the connection doesn't keep
+        stream = Stream.new(self, stream_id, state: Stream::State::CLOSED)
       end
-
-      stream = streams.find(stream_id, consume: !frame_type.priority?)
       frame = Frame.new(frame_type, stream, flags, size: size)
 
       Log.trace { "recv #{frame.debug(color: :light_cyan)}" }
@@ -464,6 +482,10 @@ module HTTP2
       loop do
         break if frame.flags.end_headers?
 
+        # the padding of the HEADERS or PUSH_PROMISE frame comes before the
+        # CONTINUATION frame (RFC 9113 sections 6.2 and 6.6)
+        skip_padding
+
         frame = read_frame_header
         unless frame.type == Frame::Type::CONTINUATION
           raise Error.protocol_error("EXPECTED continuation frame")
@@ -603,6 +625,9 @@ module HTTP2
       raise Error.frame_size_error unless frame.size % 6 == 0
 
       if frame.flags.ack?
+        # an acknowledgement has no payload (RFC 9113 section 6.5)
+        raise Error.frame_size_error unless frame.size == 0
+
         @mutex.to_reference.synchronize do
           enable_push = @unacknowledged_enable_push.shift?
           @acknowledged_enable_push = enable_push unless enable_push.nil?
@@ -689,7 +714,7 @@ module HTTP2
 
     private def read_unsupported_frame(frame)
       frame.payload = Bytes.new(frame.size)
-      io.read(frame.payload)
+      io.read_fully(frame.payload)
     end
 
     # Sends a frame to the connected peer.

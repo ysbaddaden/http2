@@ -470,7 +470,7 @@ module HTTP2
         #     raise Error.stream_closed("STREAM #{id} is #{state}")
         #   end
         # end
-        if frame.flags.end_stream? || frame.type == Frame::Type::RST_STREAM
+        if ends_stream?(frame) || frame.type == Frame::Type::RST_STREAM
           self.state = State::CLOSED
         end
 
@@ -481,7 +481,7 @@ module HTTP2
             raise Error.stream_closed("STREAM #{id} is #{state}")
           end
         end
-        if frame.flags.end_stream? || frame.type == Frame::Type::RST_STREAM
+        if ends_stream?(frame) || frame.type == Frame::Type::RST_STREAM
           self.state = State::CLOSED
         end
 
@@ -501,6 +501,13 @@ module HTTP2
           end
         end
       end
+    end
+
+    # END_STREAM is only defined on HEADERS and DATA: the same bit on another
+    # frame type is an unused flag, that must be ignored (RFC 9113 section
+    # 4.1).
+    private def ends_stream?(frame : Frame) : Bool
+      (frame.type.headers? || frame.type.data?) && frame.flags.end_stream?
     end
 
     private def error!(receiving = false)
