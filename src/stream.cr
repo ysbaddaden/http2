@@ -68,6 +68,9 @@ module HTTP2
       @mutex = uninitialized ReferenceStorage(Sync::Mutex)
       Sync::Mutex.unsafe_construct(pointerof(@mutex))
 
+      @transition = uninitialized ReferenceStorage(Sync::Mutex)
+      Sync::Mutex.unsafe_construct(pointerof(@transition))
+
       @senders = uninitialized ReferenceStorage(Sync::ConditionVariable)
       Sync::ConditionVariable.unsafe_construct(pointerof(@senders), @mutex.to_reference)
 
@@ -79,7 +82,11 @@ module HTTP2
 
     # The state of the stream. Any fiber may read it, while the fiber that
     # receives frames, a fiber that sends on the stream, or one that aborts
-    # it changes it.
+    # it changes it: each change reads the state and writes the next one
+    # under the stream's transition lock, so concurrent changes don't lose
+    # one another. A fiber that sends holds the connection's write mutex
+    # before it takes the lock, and the lock is held while the closed stream
+    # is removed from `Streams`: the locks are always taken in that order.
     def state : State
       @state.get
     end
@@ -160,7 +167,9 @@ module HTTP2
     # section 8.1) and resumes the senders waiting for a window update, so
     # they fail.
     protected def abort : Nil
-      self.state = State::CLOSED unless state.closed?
+      @transition.to_reference.synchronize do
+        self.state = State::CLOSED unless state.closed?
+      end
       data.close unless data.complete?
       resume_senders
     end
@@ -391,7 +400,11 @@ module HTTP2
 
     private def transition(frame : Frame, receiving = false)
       return if frame.stream.id == 0 || NON_TRANSITIONAL_FRAMES.includes?(frame.type)
+      @transition.to_reference.synchronize { unsafe_transition(frame, receiving) }
+    end
 
+    # Must hold the transition lock.
+    private def unsafe_transition(frame : Frame, receiving : Bool)
       case state
       when State::IDLE
         case frame.type
