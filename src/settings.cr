@@ -13,78 +13,104 @@ module HTTP2
       MAX_HEADER_LIST_SIZE   = 0x6
     end
 
-    @header_table_size : UInt32?
-    @enable_push : Bool?
-    @max_concurrent_streams : UInt32?
-    @initial_window_size : UInt32?
-    @max_frame_size : UInt32?
-    @max_header_list_size : UInt32?
+    # Each value is read and written at once, so a fiber may read the
+    # settings while the fiber that receives frames changes them: -1 for a
+    # value that isn't set.
+    @header_table_size = Atomic(Int64).new(-1)
+    @enable_push = Atomic(Int64).new(-1)
+    @max_concurrent_streams = Atomic(Int64).new(-1)
+    @initial_window_size = Atomic(Int64).new(-1)
+    @max_frame_size = Atomic(Int64).new(-1)
+    @max_header_list_size = Atomic(Int64).new(-1)
 
     # :nodoc:
     protected def initialize(
-      @header_table_size = nil,
-      @enable_push = nil,
-      @max_concurrent_streams = nil,
-      @initial_window_size = nil,
-      @max_frame_size = nil,
-      @max_header_list_size = nil,
+      header_table_size : UInt32? = nil,
+      enable_push : Bool? = nil,
+      max_concurrent_streams : UInt32? = nil,
+      initial_window_size : UInt32? = nil,
+      max_frame_size : UInt32? = nil,
+      max_header_list_size : UInt32? = nil,
     )
+      @header_table_size.set(header_table_size.to_i64) if header_table_size
+      @enable_push.set(enable_push ? 1_i64 : 0_i64) unless enable_push.nil?
+      @max_concurrent_streams.set(max_concurrent_streams.to_i64) if max_concurrent_streams
+      @initial_window_size.set(initial_window_size.to_i64) if initial_window_size
+      @max_frame_size.set(max_frame_size.to_i64) if max_frame_size
+      @max_header_list_size.set(max_header_list_size.to_i64) if max_header_list_size
+    end
+
+    # :nodoc:
+    def dup : self
+      Settings.new(
+        header_table_size: value(@header_table_size).try(&.to_u32),
+        enable_push: value(@enable_push).try(&.==(1)),
+        max_concurrent_streams: value(@max_concurrent_streams).try(&.to_u32),
+        initial_window_size: value(@initial_window_size).try(&.to_u32),
+        max_frame_size: value(@max_frame_size).try(&.to_u32),
+        max_header_list_size: value(@max_header_list_size).try(&.to_u32),
+      )
+    end
+
+    private def value(atomic : Atomic(Int64)) : Int64?
+      value = atomic.get
+      value unless value < 0
     end
 
     def header_table_size : Int32
-      (@header_table_size || DEFAULT_HEADER_TABLE_SIZE).to_i32
+      (value(@header_table_size) || DEFAULT_HEADER_TABLE_SIZE).to_i32
     end
 
     def header_table_size=(value : Int)
-      @header_table_size = value.to_u32
+      @header_table_size.set(value.to_u32.to_i64)
     end
 
     def enable_push : Bool
-      if (value = @enable_push).nil?
-        DEFAULT_ENABLE_PUSH
+      if value = value(@enable_push)
+        value == 1
       else
-        value
+        DEFAULT_ENABLE_PUSH
       end
     end
 
     def enable_push=(value : Bool)
-      @enable_push = value
+      @enable_push.set(value ? 1_i64 : 0_i64)
     end
 
     def max_concurrent_streams : UInt32?
-      @max_concurrent_streams
+      value(@max_concurrent_streams).try(&.to_u32)
     end
 
     def max_concurrent_streams=(value : Int)
-      @max_concurrent_streams = value.to_u32
+      @max_concurrent_streams.set(value.to_u32.to_i64)
     end
 
     def initial_window_size : Int32
-      (@initial_window_size || DEFAULT_INITIAL_WINDOW_SIZE).to_i32
+      (value(@initial_window_size) || DEFAULT_INITIAL_WINDOW_SIZE).to_i32
     end
 
     def initial_window_size=(size : Int)
       raise Error.flow_control_error unless 0 <= size <= MAXIMUM_WINDOW_SIZE
-      @initial_window_size = size.to_u32
+      @initial_window_size.set(size.to_i64)
     end
 
     def max_frame_size : Int32
-      (@max_frame_size || DEFAULT_MAX_FRAME_SIZE).to_i32
+      (value(@max_frame_size) || DEFAULT_MAX_FRAME_SIZE).to_i32
     end
 
     def max_frame_size=(size : Int)
       unless MINIMUM_FRAME_SIZE <= size <= MAXIMUM_FRAME_SIZE
         raise Error.protocol_error("INVALID frame size: #{size}")
       end
-      @max_frame_size = size.to_u32
+      @max_frame_size.set(size.to_i64)
     end
 
     def max_header_list_size : Int32?
-      @max_header_list_size.try(&.to_i32)
+      value(@max_header_list_size).try(&.to_i32)
     end
 
     def max_header_list_size=(value : Int)
-      @max_header_list_size = value.to_u32
+      @max_header_list_size.set(value.to_u32.to_i64)
     end
 
     def parse(bytes : Bytes, &) : Nil
@@ -123,13 +149,9 @@ module HTTP2
       io = IO::Memory.new(size * 6)
 
       {% for name in Identifier.constants %}
-        unless (value = @{{ name.underscore }}).nil?
+        if value = value(@{{ name.underscore }})
           io.write_bytes(Identifier::{{ name }}.to_u16, IO::ByteFormat::BigEndian)
-          if value.is_a?(Bool)
-            io.write_bytes(value ? 1_u32 : 0_u32, IO::ByteFormat::BigEndian)
-          else
-            io.write_bytes(value, IO::ByteFormat::BigEndian)
-          end
+          io.write_bytes(value.to_u32, IO::ByteFormat::BigEndian)
         end
       {% end %}
 
@@ -140,7 +162,7 @@ module HTTP2
     def size : Int32
       num = 0
       {% for name in Identifier.constants %}
-        num += 1 unless @{{ name.underscore }}.nil?
+        num += 1 if value(@{{ name.underscore }})
       {% end %}
       num
     end

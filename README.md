@@ -41,6 +41,35 @@ server.bind_tls(host, port, context)
 server.listen
 ```
 
+## Concurrency
+
+An HTTP/2 connection is shared by several fibers: the one that receives
+frames, and the ones that send requests, responses and bodies. Who owns what:
+
+- **The socket.** Only the fiber that receives frames reads it. Every frame
+  is written under the connection's write mutex, so frames never interleave.
+- **The HPACK contexts.** The decoder belongs to the fiber that receives
+  frames. Header blocks are encoded under the write mutex, together with
+  sending them, so the encoder's state and the order of the header blocks
+  match (RFC 9113 section 4.3).
+- **Stream state.** Any fiber may read it. Receiving, sending and aborting
+  change it under a per-stream lock. Locks are always taken in this order:
+  the write mutex, then the stream's lock, then the lock of the table of
+  streams.
+- **Bodies.** A stream's body is a buffer with its own lock: the fiber that
+  receives frames writes to it, and the handler or the response's reader
+  reads from it.
+- **Settings.** `HTTP2::Connection#remote_settings` is changed by the fiber
+  that receives frames only. Each value is read and written at once, so other
+  fibers may read it. Change `#local_settings` before `#write_settings`, or
+  call `#send_settings` after changing it.
+
+The library is synchronized for multi-threaded execution contexts, but
+`OpenSSL::SSL::Socket` isn't: its reads and writes must not run in parallel.
+Keep TLS connections on one thread: run a TLS server in a single-threaded
+execution context. Under the legacy `-Dpreview_mt` scheduler, without execution
+contexts, TLS connections can't be confined to one thread.
+
 ## Tests
 
 Build and run the `bin/server` server, then execute
