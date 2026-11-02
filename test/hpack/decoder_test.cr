@@ -295,6 +295,76 @@ module HTTP2::HPACK
       assert_equal "." * 127, headers["x"]
     end
 
+    def test_static_table_indices
+      STATIC_TABLE.each_with_index do |header, i|
+        headers = Decoder.new.decode(Bytes[0x80 | (i + 1)])
+        assert_equal [header[1]], headers.get(header[0]), "index #{i + 1}"
+      end
+    end
+
+    def test_index_61_is_static_with_a_dynamic_entry
+      decoder = Decoder.new
+      decoder.table.add("x-dynamic", "value")
+      assert_equal({"www-authenticate", ""}, decoder.indexed(61))
+      assert_equal({"x-dynamic", "value"}, decoder.indexed(62))
+      assert_raises(Error) { decoder.indexed(63) }
+    end
+
+    def test_dynamic_index_with_an_empty_table_is_an_error
+      assert_raises(Error) { Decoder.new.decode(Bytes[0xbe]) } # 62
+    end
+
+    def test_dynamic_table_boundaries
+      decoder = Decoder.new
+      decoder.table.add("a", "1")
+      decoder.table.add("b", "2")
+      assert_equal({"b", "2"}, decoder.indexed(62))
+      assert_equal({"a", "1"}, decoder.indexed(63))
+      assert_raises(Error) { decoder.indexed(64) }
+    end
+
+    def test_rejects_table_size_update_after_a_field
+      # literal without indexing, new name "x: y", then a size update to 0
+      assert_raises(Error) { Decoder.new.decode(Bytes[0x00, 0x01, 0x78, 0x01, 0x79, 0x20]) }
+      # after an indexed field too
+      assert_raises(Error) { Decoder.new.decode(Bytes[0x82, 0x20]) }
+    end
+
+    def test_accepts_table_size_updates_at_the_start
+      decoder = Decoder.new
+      headers = decoder.decode(Bytes[0x20, 0x3f, 0xe1, 0x1f, 0x82]) # 0, then 4096
+      assert_equal "GET", headers[":method"]
+      assert_equal 4096, decoder.table.maximum
+    end
+
+    def test_rejects_an_oversized_integer
+      error = assert_raises(Error) { Decoder.new.decode(Bytes[0xff, 0xff, 0xff, 0xff, 0xff, 0x7f]) }
+      refute_instance_of OverflowError, error
+    end
+
+    def test_decodes_the_largest_integer
+      # a size update to Int32::MAX: 31 + 2147483616 continuation
+      decoder = Decoder.new(Int32::MAX)
+      decoder.decode(Bytes[0x3f, 0xe0, 0xff, 0xff, 0xff, 0x07])
+      assert_equal Int32::MAX, decoder.table.maximum
+    end
+
+    def test_rejects_a_header_list_larger_than_max_size
+      decoder = Decoder.new
+      decoder.table.add("x-large", "." * 4000)
+      bytes = Bytes.new(1000, 0xbe_u8) # index 62, 1000 times
+      assert_raises(ListSizeError) { decoder.decode(bytes, max_size: 16_384) }
+    end
+
+    def test_accepts_a_header_list_up_to_max_size
+      decoder = Decoder.new
+      decoder.table.add("x-large", "." * 4000)
+      # 4 fields of 7 + 4000 + 32 bytes
+      headers = decoder.decode(Bytes.new(4, 0xbe_u8), max_size: 4 * 4039)
+      assert_equal 4, headers.get("x-large").size
+      assert_raises(ListSizeError) { decoder.decode(Bytes.new(4, 0xbe_u8), max_size: 4 * 4039 - 1) }
+    end
+
     # https://tools.ietf.org/html/rfc7541#section-5.2
     def test_rejects_padding_larger_than_7bits
       bytes = UInt8.static_array(

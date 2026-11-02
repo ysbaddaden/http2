@@ -138,6 +138,36 @@ class HTTP2::ConnectionTest < Minitest::Test
     refute connection.closed?
   end
 
+  def test_client_resets_stream_on_trailers_with_connection_specific_fields
+    {"transfer-encoding", "connection", "keep-alive"}.each do |name|
+      _, stream, output = client_response_followed_by(
+        {Frame::Flags::END_STREAM, HTTP::Headers{name => "x"}},
+        data: "content")
+
+      assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output), name
+      assert_nil stream.trailers?
+    end
+  end
+
+  def test_server_resets_stream_on_invalid_trailers
+    {literal_field("X-Checksum", "abc"), literal_field("transfer-encoding", "chunked")}.each do |field|
+      encoder = HPACK::Encoder.new(huffman: false)
+      input = IO::Memory.new
+      write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1, encoder.encode(REQUEST))
+      write_frame(input, Frame::Type::DATA, Frame::Flags::None, 1, "content".to_slice)
+      write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1, field)
+      input.rewind
+      output = IO::Memory.new
+      connection = Connection.new(IO::Stapled.new(input, output), :server)
+
+      stream = connection.receive.not_nil!.stream
+      connection.receive
+      assert_nil connection.receive
+      assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output)
+      assert_nil stream.trailers?
+    end
+  end
+
   # Receives the final response on a client stream, then the DATA of
   # *data* if any, then a header block with the given flags and headers,
   # that the connection must reject: `Connection#receive` returns nil.
@@ -358,35 +388,68 @@ class HTTP2::ConnectionTest < Minitest::Test
 
   def test_rejects_uppercase_header_names
     {"X-Custom", "x-Custom", "x-customX"}.each do |name|
-      payload = IO::Memory.new
-      payload.write(HPACK::Encoder.new(huffman: false).encode(HTTP::Headers{
-        ":method"    => "GET",
-        ":scheme"    => "http",
-        ":authority" => "example.com",
-        ":path"      => "/",
-      }))
-      # literal header field without indexing, new name (the encoder would
-      # lowercase the name)
-      payload.write_byte(0_u8)
-      payload.write_byte(name.bytesize.to_u8)
-      payload << name
-      payload.write_byte(5_u8)
-      payload << "value"
-      connection = new_connection(:server, {
-        Frame::Type::HEADERS,
-        Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM,
-        1,
-        payload.to_slice,
-      })
-
-      error = begin
-        connection.receive
-        nil
-      rescue ex : Error
-        ex
-      end
-      assert_equal Error::Code::PROTOCOL_ERROR, error.try(&.code), "#{name} header"
+      assert_malformed_request(name, "value")
     end
+  end
+
+  def test_rejects_connection_specific_header_fields
+    {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}.each do |name|
+      assert_malformed_request(name, "value")
+    end
+    assert_malformed_request("te", "gzip")
+  end
+
+  def test_accepts_te_trailers
+    connection, output = server_receiving(literal_field("te", "trailers"))
+    assert_equal "trailers", connection.receive.try(&.stream.headers["te"])
+    assert_empty reset_streams(output)
+  end
+
+  def test_rejects_invalid_field_values_and_unknown_pseudo_headers
+    assert_malformed_request("x-custom", "a\nb")
+    assert_malformed_request(":custom", "value")
+  end
+
+  # The request is malformed: a stream error, the connection goes on with
+  # the next request.
+  private def assert_malformed_request(name, value) : Nil
+    connection, output = server_receiving(literal_field(name, value))
+    assert_nil connection.receive, "#{name} header"
+    assert_equal [{1, Error::Code::PROTOCOL_ERROR}], reset_streams(output), "#{name} header"
+    assert_equal 3, connection.receive.try(&.stream.id), "#{name} header"
+  end
+
+  # A request on stream 1 with the encoded *field* after its pseudo-header
+  # fields, then a valid request on stream 3.
+  private def server_receiving(field : Bytes) : {Connection, IO::Memory}
+    encoder = HPACK::Encoder.new(huffman: false)
+    request = HTTP::Headers{
+      ":method"    => "GET",
+      ":scheme"    => "http",
+      ":authority" => "example.com",
+      ":path"      => "/",
+    }
+    payload = IO::Memory.new
+    payload.write(encoder.encode(request))
+    payload.write(field)
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1, payload.to_slice)
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 3, encoder.encode(request))
+    input.rewind
+    output = IO::Memory.new
+    {Connection.new(IO::Stapled.new(input, output), :server), output}
+  end
+
+  # A literal header field without indexing, with a new name: the encoder
+  # would lowercase the name and refuse an invalid value.
+  private def literal_field(name : String, value : String) : Bytes
+    io = IO::Memory.new
+    io.write_byte(0_u8)
+    io.write_byte(name.bytesize.to_u8)
+    io << name
+    io.write_byte(value.bytesize.to_u8)
+    io << value
+    io.to_slice
   end
 
   def test_client_accepts_frames_on_streams_it_opened

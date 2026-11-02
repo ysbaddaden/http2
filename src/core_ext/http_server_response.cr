@@ -116,6 +116,12 @@ class HTTP2::Output < HTTP::Server::Response::Output
 
   def send_headers(description : String? = nil) : Nil
     @sent_headers = true
+
+    # HTTP/2 has no connection-specific fields (RFC 9113 section 8.2.2): a
+    # handler may set them for HTTP/1
+    HTTP2::CONNECTION_SPECIFIC_FIELDS.each { |name| @headers.delete(name) }
+    @headers.delete("te") unless @headers["te"]? == "trailers"
+
     @stream.send_headers(@headers)
   end
 

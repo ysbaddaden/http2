@@ -313,27 +313,25 @@ module HTTP2
         interim = false
         malformed = false
 
-        begin
-          if trailer
-            hpack_decoder.decode(buffer, trailers = HTTP::Headers.new)
-            # a trailer section ends the stream and has no pseudo-header
-            # fields, or the message is malformed (RFC 9113 section 8.1)
-            malformed = !frame.flags.end_stream? || trailers.any? { |name, _| name.starts_with?(':') }
-            stream.trailers = trailers unless malformed
-          elsif @type.server?
-            hpack_decoder.decode(buffer, stream.headers)
-            validate_request_headers(stream.headers)
-          else
-            # interim (1xx) responses may precede the response, each in its
-            # own header block (RFC 9113 section 8.1)
-            hpack_decoder.decode(buffer, headers = HTTP::Headers.new)
-            validate_response_headers(headers)
+        # a malformed message is a stream error (RFC 9113 section 8.1.1)
+        if trailer
+          trailers = HTTP::Headers.new
+          # a trailer section ends the stream and has no pseudo-header
+          # fields (RFC 9113 section 8.1)
+          malformed = !decode_header_block(buffer, trailers) || !frame.flags.end_stream? ||
+                      !valid_fields?(trailers, NO_PSEUDO_HEADERS)
+          stream.trailers = trailers unless malformed
+        elsif @type.server?
+          malformed = !decode_header_block(buffer, stream.headers) || !valid_request_headers?(stream.headers)
+        else
+          # interim (1xx) responses may precede the response, each in its
+          # own header block (RFC 9113 section 8.1)
+          headers = HTTP::Headers.new
+          malformed = !decode_header_block(buffer, headers) || !valid_fields?(headers, RESPONSE_PSEUDO_HEADERS)
+          unless malformed
             interim = headers[":status"]?.try(&.starts_with?('1')) || false
             stream.headers.merge!(headers) unless interim
           end
-        rescue ex : HPACK::Error
-          Log.trace { "HPACK::Error: #{ex.message}" }
-          raise Error.compression_error
         end
 
         if malformed || (interim && frame.flags.end_stream?)
@@ -409,58 +407,48 @@ module HTTP2
           size -= 5
         end
         buffer = read_headers_payload(frame, size)
-        begin
-          hpack_decoder.decode(buffer, HTTP::Headers.new)
-        rescue ex : HPACK::Error
-          Log.trace { "HPACK::Error: #{ex.message}" }
-          raise Error.compression_error
-        end
+        decode_header_block(buffer, HTTP::Headers.new)
       end
     end
 
-    private def validate_request_headers(headers : HTTP::Headers) : Nil
-      validate_headers(headers, REQUEST_PSEUDO_HEADERS)
+    private NO_PSEUDO_HEADERS = [] of String
 
-      unless headers.get?(":method").try(&.size) == 1
-        raise Error.protocol_error("INVALID :method pseudo-header")
-      end
+    # Returns false if the request is malformed: invalid fields, or a
+    # missing or repeated `:method`, `:scheme` or `:path` (RFC 9113 section
+    # 8.3.1).
+    private def valid_request_headers?(headers : HTTP::Headers) : Bool
+      return false unless valid_fields?(headers, REQUEST_PSEUDO_HEADERS)
+      return false unless headers.get?(":method").try(&.size) == 1
 
       unless headers[":method"] == "CONNECT"
-        unless headers.get?(":scheme").try(&.size) == 1
-          raise Error.protocol_error("INVALID :scheme pseudo-header")
-        end
-
+        return false unless headers.get?(":scheme").try(&.size) == 1
         paths = headers.get?(":path")
-        unless paths.try(&.size) == 1 && !paths.try(&.first.empty?)
-          raise Error.protocol_error("INVALID :path pseudo-header")
-        end
+        return false unless paths && paths.size == 1 && !paths.first.empty?
       end
+
+      true
     end
 
-    private def validate_response_headers(headers : HTTP::Headers) : Nil
-      validate_headers(headers, RESPONSE_PSEUDO_HEADERS)
-    end
-
-    private def validate_headers(headers : HTTP::Headers, pseudo : Array(String)) : Nil
+    # Returns false if a field makes the message malformed (RFC 9113 section
+    # 8.2): an uppercase name, a pseudo-header field that isn't one of
+    # *pseudo* or that follows a regular field, or a connection-specific
+    # field.
+    private def valid_fields?(headers : HTTP::Headers, pseudo : Array(String)) : Bool
       regular = false
 
-      headers.each_key do |name|
-        # special colon (:) headers MUST come before the regular headers
+      headers.each do |name, values|
+        # pseudo-header fields come before the regular fields
         regular ||= !name.starts_with?(':')
+        return false if name.starts_with?(':') && (regular || !pseudo.includes?(name))
 
-        # field names must be lowercase (RFC 9113 section 8.2.1)
-        if (name.starts_with?(':') && (regular || !pseudo.includes?(name))) || name.each_char.any?(&.ascii_uppercase?)
-          raise Error.protocol_error("MALFORMED #{name} header")
-        end
+        # field names are lowercase (RFC 9113 section 8.2.1)
+        return false if name.each_char.any?(&.ascii_uppercase?)
 
-        if name == "connection"
-          raise Error.protocol_error("MALFORMED #{name} header")
-        end
-
-        if name == "te" && headers["te"] != "trailers"
-          raise Error.protocol_error("MALFORMED #{name} header")
-        end
+        return false if CONNECTION_SPECIFIC_FIELDS.includes?(name)
+        return false if name == "te" && values != ["trailers"]
       end
+
+      true
     end
 
     # OPTIMIZE: consider CircularBuffer and decompressing HPACK headers
@@ -494,10 +482,31 @@ module HTTP2
       pointer.to_slice(size)
     end
 
-    # A header block isn't larger than the header list it encodes: refuses a
-    # header block larger than the SETTINGS_MAX_HEADER_LIST_SIZE we announced
-    # before reading it, so a peer can't make us buffer an unbounded block
-    # (RFC 9113 sections 6.5.2 and 10.5.1).
+    # Decodes a header block into *headers*. The decoded list can't be larger
+    # than the SETTINGS_MAX_HEADER_LIST_SIZE we announced, indexed fields
+    # included: a small block may reference large entries of the dynamic
+    # table many times (RFC 9113 sections 6.5.2 and 10.5.1). That is a
+    # connection error, as for a block too large to buffer.
+    #
+    # Returns false if a field has an invalid name or value: the message is
+    # malformed (RFC 9113 section 8.2.1).
+    private def decode_header_block(buffer : Bytes, headers : HTTP::Headers) : Bool
+      hpack_decoder.decode(buffer, headers, local_settings.max_header_list_size)
+      true
+    rescue ex : HPACK::InvalidFieldError
+      false
+    rescue ex : HPACK::ListSizeError
+      raise Error.protocol_error("HEADER list size exceeds limit")
+    rescue ex : HPACK::Error
+      Log.trace { "HPACK::Error: #{ex.message}" }
+      raise Error.compression_error
+    end
+
+    # Refuses a header block larger than the SETTINGS_MAX_HEADER_LIST_SIZE we
+    # announced before reading it, so a peer can't make us buffer an
+    # unbounded block: an encoded field is never smaller than the octets its
+    # name and value add to the list, so a block that large always encodes a
+    # list that is too large (RFC 9113 sections 6.5.2 and 10.5.1).
     private def validate_header_block_size(size) : Nil
       if (max_size = local_settings.max_header_list_size) && size > max_size
         raise Error.protocol_error("HEADER list size exceeds limit")
@@ -526,6 +535,8 @@ module HTTP2
         raise Error.protocol_error("STREAM #{stream.id} is #{stream.state}")
       end
 
+      malformed = false
+
       read_padded(frame) do |size|
         raise Error.frame_size_error if size < 4
         _, promised_stream_id = read_stream_id
@@ -540,12 +551,14 @@ module HTTP2
         frame.promised_stream = promised
 
         buffer = read_headers_payload(frame, size - 4)
-        begin
-          hpack_decoder.decode(buffer, promised.headers)
-        rescue ex : HPACK::Error
-          Log.trace { "HPACK::Error: #{ex.message}" }
-          raise Error.compression_error
-        end
+        malformed = !decode_header_block(buffer, promised.headers) || !valid_request_headers?(promised.headers)
+      end
+
+      if malformed
+        # a malformed promised request is a stream error on the promised
+        # stream (RFC 9113 section 8.4.1)
+        frame.promised_stream.send_rst_stream(Error::Code::PROTOCOL_ERROR)
+        return false
       end
 
       # another fiber may have reset the stream meanwhile

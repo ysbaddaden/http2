@@ -19,4 +19,9 @@ module HTTP2
 
   REQUEST_PSEUDO_HEADERS  = %w(:method :scheme :authority :path)
   RESPONSE_PSEUDO_HEADERS = %w(:status)
+
+  # Connection-specific fields, that HTTP/2 doesn't use: a message that has
+  # one is malformed, as is a `te` field other than `trailers` (RFC 9113
+  # section 8.2.2).
+  CONNECTION_SPECIFIC_FIELDS = {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}
 end
