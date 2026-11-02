@@ -201,6 +201,8 @@ module HTTP2
       end
       io = IO::Memory.new(WINDOW_UPDATE_FRAME_SIZE)
       io.write_bytes(increment.to_u32 & 0x7fffffff_u32, IO::ByteFormat::BigEndian)
+      # the peer may send as soon as it gets the frame
+      data.add_credit(increment) unless id == 0
       connection.send Frame.new(Frame::Type::WINDOW_UPDATE, self, payload: io.to_slice)
     end
 

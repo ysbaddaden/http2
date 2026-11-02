@@ -170,13 +170,43 @@ module HTTP2
       property default_indexing : Indexing
       property default_huffman : Bool
 
+      # The dynamic table size update the next header block starts with, if
+      # the size changed since the last block, and the smallest size it had
+      # meanwhile (RFC 7541 section 4.2).
+      @size_update : Int32? = nil
+      @smallest_size : Int32? = nil
+
       def initialize(indexing = Indexing::NONE, huffman = false, max_table_size = 4096)
         @default_indexing = indexing
         @default_huffman = huffman
         @table = DynamicTable.new(max_table_size)
       end
 
+      def max_table_size : Int32
+        table.maximum
+      end
+
+      # Changes the size of the dynamic table, for example once the peer
+      # changed its SETTINGS_HEADER_TABLE_SIZE: the next header block starts
+      # with a dynamic table size update (RFC 7541 sections 4.2 and 6.3).
+      def max_table_size=(size : Int32) : Int32
+        return size if size == table.maximum && @size_update.nil?
+        @smallest_size = Math.min(@smallest_size || table.maximum, size)
+        @size_update = size
+        table.resize(size)
+        size
+      end
+
       def encode(headers : HTTP::Headers, indexing = default_indexing, huffman = default_huffman, @writer = IO::Memory.new)
+        if size = @size_update
+          # the smallest size first, if the table shrank then grew again, so
+          # the decoder evicts the same entries
+          if (smallest = @smallest_size) && smallest < size
+            integer(smallest, 5, prefix: 0x20_u8)
+          end
+          integer(size, 5, prefix: 0x20_u8)
+          @size_update = @smallest_size = nil
+        end
         headers.each { |name, values| encode(name.downcase, values, indexing, huffman) if name.starts_with?(':') }
         headers.each { |name, values| encode(name.downcase, values, indexing, huffman) unless name.starts_with?(':') }
         writer.to_slice

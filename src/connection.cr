@@ -64,6 +64,11 @@ module HTTP2
     @unacknowledged_enable_push = Deque(Bool).new
     @acknowledged_enable_push = DEFAULT_ENABLE_PUSH
 
+    # The SETTINGS_HEADER_TABLE_SIZE value of each SETTINGS frame we sent
+    # that the peer didn't acknowledge yet, oldest first: it bounds our
+    # decoder once acknowledged (RFC 9113 section 4.3.1).
+    @unacknowledged_header_table_size = Deque(Int32).new
+
     # The size of the connection flow-control window we keep for the peer to
     # send DATA (RFC 9113 section 6.9): once less than half of it is
     # available, the window grows by that size. Defaults to `nil`: the local
@@ -88,13 +93,15 @@ module HTTP2
       @closed = false
       @write_failed = false
 
+      # the peer's SETTINGS_HEADER_TABLE_SIZE bounds our encoder, ours bounds
+      # our decoder (RFC 9113 section 4.3.1)
       @hpack_encoder = HPACK::Encoder.new(
-        max_table_size: local_settings.header_table_size,
+        max_table_size: DEFAULT_HEADER_TABLE_SIZE,
         indexing: HPACK::Indexing::NONE,
         huffman: true
       )
       @hpack_decoder = HPACK::Decoder.new(
-        max_table_size: remote_settings.header_table_size
+        max_table_size: DEFAULT_HEADER_TABLE_SIZE
       )
 
       @inbound_window_size = DEFAULT_INITIAL_WINDOW_SIZE
@@ -291,6 +298,15 @@ module HTTP2
       valid = true
 
       consume_inbound_window_size(frame.size)
+
+      # exceeding the stream window is a stream error (RFC 9113 section
+      # 6.9.1); the frame still counts against the connection window
+      unless stream.data.consume_credit(frame.size)
+        io.skip(frame.size)
+        stream.send_rst_stream(Error::Code::FLOW_CONTROL_ERROR)
+        stream.abort
+        return false
+      end
 
       read_padded(frame) do |size|
         # skipped if another fiber closed the body meanwhile
@@ -631,16 +647,22 @@ module HTTP2
         @mutex.to_reference.synchronize do
           enable_push = @unacknowledged_enable_push.shift?
           @acknowledged_enable_push = enable_push unless enable_push.nil?
+          if header_table_size = @unacknowledged_header_table_size.shift?
+            # only the fiber that receives frames uses the decoder
+            hpack_decoder.max_table_size = header_table_size
+          end
         end
         return
       end
+
+      header_table_size = nil
 
       remote_settings.parse(io, frame.size // 6) do |id, value|
         Log.trace { "  #{id}=#{value}" }
 
         case id
         when Settings::Identifier::HEADER_TABLE_SIZE
-          hpack_decoder.max_table_size = value.to_i32
+          header_table_size = value
 
         when Settings::Identifier::INITIAL_WINDOW_SIZE
           difference = value.to_i32 - remote_settings.initial_window_size
@@ -656,8 +678,17 @@ module HTTP2
         end
       end
 
-      # ACK reception of remote SETTINGS:
-      send Frame.new(Frame::Type::SETTINGS, frame.stream, ACK)
+      synchronize do
+        if size = header_table_size
+          # our encoder doesn't need a table larger than the default, and
+          # the next header block, encoded after the ACK, starts with the
+          # update if the size changed (RFC 7541 section 4.2)
+          hpack_encoder.max_table_size = Math.min(size, DEFAULT_HEADER_TABLE_SIZE.to_u32).to_i32
+        end
+
+        # ACK reception of remote SETTINGS:
+        write Frame.new(Frame::Type::SETTINGS, frame.stream, ACK)
+      end
     end
 
     private def read_ping_frame(frame)
@@ -781,6 +812,7 @@ module HTTP2
     # established MUST use `#send_settings` instead!
     def write_settings : Nil
       @unacknowledged_enable_push << local_settings.enable_push
+      @unacknowledged_header_table_size << local_settings.header_table_size
       write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), payload: local_settings.to_payload)
 
       # the connection window starts at 65535 bytes whatever the settings
@@ -796,6 +828,7 @@ module HTTP2
     def send_settings : Nil
       synchronize do
         @unacknowledged_enable_push << local_settings.enable_push
+        @unacknowledged_header_table_size << local_settings.header_table_size
         write Frame.new(HTTP2::Frame::Type::SETTINGS, streams.find(0), payload: local_settings.to_payload)
       end
     end
@@ -838,6 +871,9 @@ module HTTP2
     # WINDOW_UPDATE frame to increment it by the connection window size,
     # respecting `MAXIMUM_WINDOW_SIZE`.
     private def consume_inbound_window_size(size)
+      # the peer must not exceed the connection window (RFC 9113 section
+      # 6.9.1)
+      raise Error.flow_control_error("DATA exceeds the connection window") if size > @inbound_window_size
       @inbound_window_size -= size
       window_size = connection_window_size
 

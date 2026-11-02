@@ -15,8 +15,14 @@ module HTTP2
     @inbound_window_size : Int32
     @size : Int32
 
+    # The flow-control credit the peer has left to send DATA on the stream:
+    # the window we gave it (RFC 9113 section 6.9). Receiving DATA consumes
+    # it, padding included, and each WINDOW_UPDATE we send gives it back.
+    @credit : Atomic(Int32)
+
     # :nodoc:
     protected def initialize(@stream, window_size)
+      @credit = Atomic(Int32).new(window_size)
       @inbound_window_size = window_size
       @size = 0
       @buffer = uninitialized ReferenceStorage(CircularBuffer)
@@ -63,8 +69,9 @@ module HTTP2
     # middle of a frame.
     protected def copy_from(io : IO, size : Int32, scratch : Bytes) : Bool
       @size += size
+      # the credit leaves room for the bytes
       if (buffer.capacity - buffer.size) < size
-        raise ArgumentError.new
+        raise HTTP2::Error.flow_control_error("DATA exceeds the buffer of stream #{@stream.id}")
       end
       while size > 0
         chunk = scratch[0, Math.min(size, scratch.size)]
@@ -81,6 +88,23 @@ module HTTP2
         end
       end
       true
+    end
+
+    # Consumes *size* bytes of the peer's credit, the whole length of a DATA
+    # frame. Returns false if the peer had less: it exceeded the stream
+    # window.
+    protected def consume_credit(size : Int32) : Bool
+      credit = @credit.get
+      loop do
+        return false if size > credit
+        credit, success = @credit.compare_and_set(credit, credit - size)
+        return true if success
+      end
+    end
+
+    # Gives *increment* bytes of credit back, with a WINDOW_UPDATE frame.
+    protected def add_credit(increment : Int32) : Nil
+      @credit.add(increment)
     end
 
     # Returns true once the whole body was received (END_STREAM).

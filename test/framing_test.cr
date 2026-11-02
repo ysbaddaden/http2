@@ -200,6 +200,151 @@ class HTTP2::FramingTest < Minitest::Test
     assert_equal 2**24 - 1, connection.remote_settings.max_frame_size
   end
 
+  def test_peer_header_table_size_bounds_the_encoder_with_a_size_update
+    output = IO::Memory.new
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 1, 0, 0, 0, 0]) # HEADER_TABLE_SIZE=0
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      HPACK::Encoder.new(huffman: false).encode(REQUEST))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, output), :server)
+
+    connection.receive
+    # the peer's setting doesn't change what our decoder accepts
+    assert_equal DEFAULT_HEADER_TABLE_SIZE, connection.hpack_decoder.max_table_size
+    stream = connection.receive.not_nil!.stream
+    stream.send_headers(HTTP::Headers{":status" => "200"}, Frame::Flags::END_STREAM)
+
+    blocks = header_blocks(output)
+    assert_equal 0x20_u8, blocks[0][0], "the first block starts with a size update to 0"
+    assert_equal 0x88_u8, blocks[0][1]
+  end
+
+  def test_peer_header_table_size_unchanged_sends_no_size_update
+    output = IO::Memory.new
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 1, 0, 1, 0, 0]) # 65536
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      HPACK::Encoder.new(huffman: false).encode(REQUEST))
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, output), :server)
+
+    connection.receive
+    connection.receive.not_nil!.stream.send_headers(HTTP::Headers{":status" => "200"}, Frame::Flags::END_STREAM)
+    assert_equal 0x88_u8, header_blocks(output)[0][0]
+  end
+
+  def test_our_header_table_size_bounds_the_decoder_once_acknowledged
+    output = IO::Memory.new
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::SETTINGS, Frame::Flags::END_STREAM, 0) # ACK
+    # a size update to 8192, then :method GET
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 1,
+      Bytes[0x3f, 0xe1, 0x3f, 0x82, 0x86, 0x84, 0x41, 0x01, 0x78])
+    input.rewind
+    connection = Connection.new(IO::Stapled.new(input, output), :server)
+    connection.local_settings.header_table_size = 8192
+    connection.write_settings
+    assert_equal DEFAULT_HEADER_TABLE_SIZE, connection.hpack_decoder.max_table_size
+
+    connection.receive
+    assert_equal 8192, connection.hpack_decoder.max_table_size
+    assert_equal "GET", connection.receive.not_nil!.stream.headers[":method"]
+    assert_equal 8192, connection.hpack_decoder.table.maximum
+  end
+
+  def test_encoder_signals_a_shrink_then_grow
+    encoder = HPACK::Encoder.new
+    encoder.max_table_size = 0
+    encoder.max_table_size = 4096
+    block = encoder.encode(HTTP::Headers{":method" => "GET"})
+    assert_equal Bytes[0x20, 0x3f, 0xe1, 0x1f, 0x82], block
+    assert_equal Bytes[0x82], encoder.encode(HTTP::Headers{":method" => "GET"})
+  end
+
+  def test_padding_counts_against_the_stream_window
+    # a stream window of 16, and a DATA frame of 32 bytes of padding
+    connection, output = small_window_stream do |io|
+      payload = Bytes.new(32)
+      payload[0] = 31_u8
+      write_frame(io, Frame::Type::DATA, Frame::Flags::PADDED, 1, payload)
+      write_frame(io, Frame::Type::PING, Frame::Flags::None, 0, Bytes.new(8))
+    end
+    assert_nil connection.receive
+    assert_equal [{1, Error::Code::FLOW_CONTROL_ERROR}], reset_streams(output)
+    # the connection goes on
+    assert connection.receive.try(&.type.ping?)
+  end
+
+  def test_data_exceeding_the_stream_window_is_a_stream_error
+    connection, output = small_window_stream do |io|
+      write_frame(io, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(10))
+      write_frame(io, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(10))
+    end
+    assert connection.receive.try(&.type.data?)
+    assert_nil connection.receive
+    assert_equal [{1, Error::Code::FLOW_CONTROL_ERROR}], reset_streams(output)
+  end
+
+  def test_data_within_the_stream_window_once_given_back
+    connection, output = small_window_stream do |io|
+      write_frame(io, Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(16))
+      write_frame(io, Frame::Type::DATA, Frame::Flags::END_STREAM, 1, Bytes.new(16))
+    end
+    stream = connection.receive.not_nil!.stream
+    # reading the body gives the window back
+    assert_equal 16, stream.data.read(Bytes.new(16))
+    assert connection.receive.try(&.type.data?)
+    assert_empty reset_streams(output)
+  end
+
+  # A server connection with an initial stream window of 16 bytes, that
+  # receives a request on stream 1, then the frames the block writes.
+  private def small_window_stream(&) : {Connection, IO::Memory}
+    input = IO::Memory.new
+    write_frame(input, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 1,
+      HPACK::Encoder.new(huffman: false).encode(REQUEST))
+    yield input
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :server)
+    connection.local_settings.initial_window_size = 16
+    connection.receive
+    {connection, output}
+  end
+
+  private def reset_streams(io : IO::Memory) : Array({Int32, Error::Code})
+    io.rewind
+    resets = [] of {Int32, Error::Code}
+    while io.pos < io.size
+      header = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+      size, type = (header >> 8).to_i, header & 0xff
+      io.skip(1)
+      stream_id = io.read_bytes(UInt32, IO::ByteFormat::BigEndian).to_i32 & 0x7fffffff
+      if type == Frame::Type::RST_STREAM.value
+        resets << {stream_id, Error::Code.new(io.read_bytes(UInt32, IO::ByteFormat::BigEndian))}
+      else
+        io.skip(size)
+      end
+    end
+    resets
+  end
+
+  # The header block of each HEADERS frame written to *io*.
+  private def header_blocks(io : IO::Memory) : Array(Bytes)
+    io.rewind
+    blocks = [] of Bytes
+    while io.pos < io.size
+      header = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+      size, type = (header >> 8).to_i, header & 0xff
+      io.skip(5)
+      payload = Bytes.new(size)
+      io.read_fully(payload)
+      blocks << payload if type == Frame::Type::HEADERS.value
+    end
+    blocks
+  end
+
   # A server connection that receives the frames the block writes.
   private def receiving(&) : Connection
     input = IO::Memory.new
