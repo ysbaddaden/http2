@@ -325,21 +325,21 @@ class HTTP1::ConnectionTest < Minitest::Test
   def test_content
     headers = HTTP::Headers.new
     c = connection("")
-    assert_nil c.content(headers, mandatory: false)
+    assert_nil c.content(headers, mandatory: false) { |status| flunk "Unexpected content error: #{status}" }
 
-    assert_instance_of HTTP::UnknownLengthContent, content = c.content(headers, mandatory: true)
+    assert_instance_of HTTP::UnknownLengthContent, content = c.content(headers, mandatory: true) { |status| flunk "Unexpected content error: #{status}" }
     assert_equal "", content.try(&.gets_to_end)
     refute c.faulty?
     refute content.@expects_continue if content
 
     headers = HTTP::Headers{"expect" => "100-continue"}
     c = connection("")
-    assert_instance_of HTTP::UnknownLengthContent, content = c.content(headers, mandatory: true)
+    assert_instance_of HTTP::UnknownLengthContent, content = c.content(headers, mandatory: true) { |status| flunk "Unexpected content error: #{status}" }
     assert content.@expects_continue if content
 
     headers = HTTP::Headers.new
     c = connection("12345")
-    assert_instance_of HTTP::UnknownLengthContent, content = c.content(headers, mandatory: true)
+    assert_instance_of HTTP::UnknownLengthContent, content = c.content(headers, mandatory: true) { |status| flunk "Unexpected content error: #{status}" }
     assert_equal "12345", content.try(&.gets_to_end)
     refute c.faulty?
   end
@@ -347,13 +347,13 @@ class HTTP1::ConnectionTest < Minitest::Test
   def test_fixed_length_content
     headers = HTTP::Headers{"content-length" => "0"}
     c = connection("")
-    assert_instance_of HTTP::FixedLengthContent, content = c.content(headers)
+    assert_instance_of HTTP::FixedLengthContent, content = c.content(headers) { |status| flunk "Unexpected content error: #{status}" }
     assert_equal "", content.try(&.gets_to_end)
     refute c.faulty?
 
     headers = HTTP::Headers{"content-length" => "5"}
     c = connection("12345")
-    assert_instance_of HTTP::FixedLengthContent, content = c.content(headers)
+    assert_instance_of HTTP::FixedLengthContent, content = c.content(headers) { |status| flunk "Unexpected content error: #{status}" }
     assert_equal "12345", content.try(&.gets_to_end)
     refute c.faulty?
   end
@@ -361,22 +361,26 @@ class HTTP1::ConnectionTest < Minitest::Test
   def test_chunked_content
     headers = HTTP::Headers{"transfer-encoding" => "chunked"}
     c = connection("0\r\n\r\n")
-    assert_instance_of HTTP::ChunkedContent, content = c.content(headers)
+    assert_instance_of HTTP::ChunkedContent, content = c.content(headers) { |status| flunk "Unexpected content error: #{status}" }
     assert_equal "", content.try(&.gets_to_end)
     refute c.faulty?
 
     headers = HTTP::Headers{"transfer-encoding" => "chunked"}
     c = connection("5\r\n123450\r\n\r\n")
-    assert_instance_of HTTP::ChunkedContent, content = c.content(headers)
+    assert_instance_of HTTP::ChunkedContent, content = c.content(headers) { |status| flunk "Unexpected content error: #{status}" }
     assert_equal "12345", content.try(&.gets_to_end)
     refute c.faulty?
 
-    # ignores content-length and reports faulty connection state (must close the
-    # connection after handling the request or response).
+    # Conflicting framing is rejected and requires closing the connection.
     headers = HTTP::Headers{"content-length" => "0", "transfer-encoding" => "chunked"}
     c = connection("0\r\n\r\n")
-    assert_instance_of HTTP::ChunkedContent, c.content(headers)
-    assert_equal "", content.try(&.gets_to_end)
+    errors = [] of HTTP::Status
+    content = c.content(headers) do |status|
+      errors << status
+      nil
+    end
+    assert_nil content
+    assert_equal [HTTP::Status::BAD_REQUEST], errors
     assert c.faulty?
   end
 
@@ -384,7 +388,7 @@ class HTTP1::ConnectionTest < Minitest::Test
     headers = HTTP::Headers{"transfer-encoding" => "chunked"}
     c = connection("5\r\n123450\r\nsome-name: value\r\n\r\n")
 
-    content = c.content(headers).as(HTTP::ChunkedContent)
+    content = c.content(headers) { |status| flunk "Unexpected content error: #{status}" }.as(HTTP::ChunkedContent)
     assert_nil content.trailers?
 
     assert_equal "12345", content.try(&.gets_to_end)
