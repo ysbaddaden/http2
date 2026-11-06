@@ -2,6 +2,12 @@ require "./test_helper"
 require "../src/http1"
 
 class HTTP1::ConnectionTest < Minitest::Test
+  private class UnbufferedInput < IO::Memory
+    def peek : Bytes?
+      # Disable peeking to exercise the fallback reader.
+    end
+  end
+
   def test_read_request_line
     %w[CONNECT DELETE HEAD GET OPTIONS PATCH POST PUT TRACE xyz x].each do |method|
       %w[HTTP/1.0 HTTP/1.1].each do |version|
@@ -18,10 +24,9 @@ class HTTP1::ConnectionTest < Minitest::Test
         assert_equal({method, "/"}, c.read_request_line)
         assert_equal version, c.version
 
-        # no CR before LF
+        # INVALID: no CR before LF
         c = connection("#{method} / #{version}\n")
-        assert_equal({method, "/"}, c.read_request_line)
-        assert_equal version, c.version
+        assert_equal HTTP::Status::BAD_REQUEST, c.read_request_line
       end
 
       # request-target can be an URI (for example proxy intermediary)
@@ -72,7 +77,72 @@ class HTTP1::ConnectionTest < Minitest::Test
 
     # INVALID: invalid HTTP-version
     c = connection("GET / HTTP/3.0\r\n")
-    assert_equal(HTTP::Status::BAD_REQUEST, c.read_request_line)
+    assert_equal(HTTP::Status::HTTP_VERSION_NOT_SUPPORTED, c.read_request_line)
+  end
+
+  def test_line_terminators
+    [IO::Memory, UnbufferedInput].each do |input|
+      c = HTTP1::Connection.new(input.new("GET / HTTP/1.1\r\n"))
+      c.max_request_line_size = 15
+      assert_equal({"GET", "/"}, c.read_request_line)
+
+      c = HTTP1::Connection.new(input.new("GET / HTTP/1.1\r\n"))
+      c.max_request_line_size = 14
+      assert_equal HTTP::Status::URI_TOO_LONG, c.read_request_line
+
+      [false, true].each do |allow_lone_lf|
+        [
+          "\r\n",
+          "\n",
+          "",
+          "\r",
+          "\rX\r\n",
+          "\rX\n",
+          "\r\r\n",
+        ].each do |ending|
+          valid = ending == "\r\n" || (allow_lone_lf && ending == "\n")
+
+          c = HTTP1::Connection.new(input.new("GET / HTTP/1.1#{ending}"))
+          c.allow_lone_lf = allow_lone_lf
+          assert_equal(valid ? {"GET", "/"} : HTTP::Status::BAD_REQUEST, c.read_request_line)
+
+          c = HTTP1::Connection.new(input.new("HTTP/1.1 200 OK#{ending}"))
+          c.allow_lone_lf = allow_lone_lf
+          assert_equal(valid ? {"HTTP/1.1", 200, "OK"} : nil, c.read_status_line)
+
+          c = HTTP1::Connection.new(input.new("name: value#{ending}"))
+          c.allow_lone_lf = allow_lone_lf
+          assert_equal(valid ? nil : HTTP::Status::BAD_REQUEST, c.read_fields(HTTP::Headers.new))
+
+          c = HTTP1::Connection.new(input.new("1#{ending}"))
+          c.allow_lone_lf = allow_lone_lf
+          assert_equal(ending == "\r\n" ? 1 : nil, c.read_chunk_line)
+        end
+      end
+    end
+  end
+
+  def test_lone_cr_in_lines
+    [IO::Memory, UnbufferedInput].each do |input|
+      [false, true].each do |allow_lone_lf|
+        [
+          "\r\n",
+          "\n",
+        ].each do |ending|
+          c = HTTP1::Connection.new(input.new("GET /bad\rpath HTTP/1.1#{ending}"))
+          c.allow_lone_lf = allow_lone_lf
+          assert_equal HTTP::Status::BAD_REQUEST, c.read_request_line
+
+          c = HTTP1::Connection.new(input.new("HTTP/1.1 200 bad\rreason#{ending}"))
+          c.allow_lone_lf = allow_lone_lf
+          assert_nil c.read_status_line
+
+          c = HTTP1::Connection.new(input.new("name: bad\rvalue#{ending}"))
+          c.allow_lone_lf = allow_lone_lf
+          assert_equal HTTP::Status::BAD_REQUEST, c.read_fields(HTTP::Headers.new)
+        end
+      end
+    end
   end
 
   def test_read_status_line
@@ -270,18 +340,28 @@ class HTTP1::ConnectionTest < Minitest::Test
       "www-authenticate" => "value",
     }, headers
 
-    # INVALID: OWS (SP, HTAB) before COLON
-    c = connection("badname : value\r\n\r\n")
-    assert_equal HTTP::Status::BAD_REQUEST, c.read_fields(headers = HTTP::Headers.new)
+    # no fields
+    c = connection("\r\n\r\n")
+    assert_nil c.read_fields(headers = HTTP::Headers.new)
     assert_empty headers
 
-    c = connection(" badname: value\r\n\r\n")
-    assert_equal HTTP::Status::BAD_REQUEST, c.read_fields(headers = HTTP::Headers.new)
-    assert_empty headers
-
-    c = connection("bad\tname: value\r\n\r\n")
-    assert_equal HTTP::Status::BAD_REQUEST, c.read_fields(headers = HTTP::Headers.new)
-    assert_empty headers
+    # INVALID
+    [
+      " ",
+      "badname",
+      "badname : value",
+      " badname: value",
+      "bad name: value",
+      "bad\nname: value",
+      "bad\rname: value",
+      "name: bad\nvalue",
+      "name: bad\rvalue",
+    ].each do |field|
+      c = connection("#{field}\r\n\r\n")
+      assert_equal HTTP::Status::BAD_REQUEST, c.read_fields(headers = HTTP::Headers.new),
+        "expected '#{field.inspect}' to not parse"
+      assert_empty headers
+    end
   end
 
   def test_read_chunk_line
@@ -325,7 +405,7 @@ class HTTP1::ConnectionTest < Minitest::Test
   def test_read_chunk_extensions
     c = connection(%(a; flag; key = token; quoted="a; b\\"c\\\\d"; empty=""\t;\tmore=\tv\r\n))
     extensions = [] of {String, String?}
-    assert_equal 10, c.read_chunk_line { |name, value| extensions << {name, value} }
+    assert_equal 0xa, c.read_chunk_line { |name, value| extensions << {name, value} }
     assert_equal [
       {"flag", nil},
       {"key", "token"},
@@ -355,7 +435,7 @@ class HTTP1::ConnectionTest < Minitest::Test
       " "
     ].each do |extension|
       assert_nil connection("1#{extension}\r\n").read_chunk_line
-      assert_nil connection("1#{extension}\r\n").read_chunk_line { |_, _| }
+      assert_nil connection("1#{extension}\r\n").read_chunk_line { }
     end
   end
 

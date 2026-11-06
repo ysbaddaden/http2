@@ -31,9 +31,14 @@ module HTTP1
     # Limit the overall headers bytesize. Defaults to 16KB.
     property max_headers_size : Int32 = 16384
 
+    # Allow lone LF for start lines and fields.
+    #
+    # Strongly discouraged. Only enable if you hit compatibility issues.
+    property? allow_lone_lf : Bool = false
+
     # Peek into the IO buffer to see if a whole line is available (that should
     # usually be the case). Fall backs to allocate a String to read a full line.
-    private def read_line(max_line_size, too_long, &)
+    private def read_line(max_line_size, too_long, invalid = nil, allow_lone_lf = @allow_lone_lf, &)
       if peek = io.peek
         return if peek.empty? # EOF
 
@@ -43,10 +48,17 @@ module HTTP1
           return too_long if index > max_line_size
 
           size = index
-          size -= 1 if index > 0 && peek[index - 1] == CR
+          if index > 0 && peek[index - 1] == CR
+            size -= 1
+          elsif !allow_lone_lf
+            return invalid
+          end
+
+          line = peek[0, size]
+          return invalid if line.includes?(CR)
 
           begin
-            value = yield(peek[0, size])
+            value = yield(line)
           ensure
             # seek IO to the byte just after LF
             io.skip(index + 1)
@@ -56,18 +68,30 @@ module HTTP1
         end
       end
 
-      # Can't peek or didn't find LF: read line from IO; we put the limit at +1
-      # byte so we can detect the limit, while never reading past the LF char.
-      return unless line = io.gets(max_line_size + 1, chomp: true)
-      return too_long if line.bytesize > max_line_size
+      # Can't peek or didn't find LF: read line from IO; Keep the terminator to
+      # validate it in both paths. Read at most one byte past the maximum LF
+      # index to detect an oversized line.
+      return unless line = io.gets(max_line_size + 2, chomp: false)
+      return too_long if line.bytesize > max_line_size + 1
+      return invalid unless line.ends_with?("\n")
 
-      yield line.to_slice
+      size = line.bytesize - 1
+      if size > 0 && line.to_slice[size - 1] == CR
+        size -= 1
+      elsif !allow_lone_lf
+        return invalid
+      end
+
+      slice = line.to_slice[0, size]
+      return invalid if slice.includes?(CR)
+
+      yield slice
     end
 
-    private def loop_read_line(max_line_size, too_long, &)
+    private def loop_read_line(max_line_size, too_long, invalid = nil, &)
       loop do
         found_line = false
-        ret = read_line(max_line_size, too_long) do |slice|
+        ret = read_line(max_line_size, too_long, invalid) do |slice|
           found_line = true
           yield slice
         end
@@ -80,7 +104,7 @@ module HTTP1
     # success, an `HTTP::Status` on error (so a server can reply with an
     # appropriate status code before closing the connection) and `nil` on EOF.
     def read_request_line : {String, String} | HTTP::Status | Nil
-      read_line(max_request_line_size, HTTP::Status::URI_TOO_LONG) do |slice|
+      read_line(max_request_line_size, HTTP::Status::URI_TOO_LONG, HTTP::Status::BAD_REQUEST) do |slice|
         if slice == "PRI * HTTP/2.0".to_slice
           @version = "HTTP/2.0"
           return {"PRI", "*"}
@@ -145,8 +169,8 @@ module HTTP1
     end
 
     # Parses a status line from *io*. Returns the HTTP version, status code and
-    # reason phrase on success. Returns `nil` on errors and EOF (a client shall
-    # close the connection).
+    # reason phrase on success. Returns `nil` on errors and EOF, and the client
+    # must close the connection.
     def read_status_line : {String, Int32, String} | Nil
       read_line(max_status_line_size, nil) do |slice|
         # status-line = HTTP-version SP+ status SP+ reason-phrase SP* [CR] LF
@@ -212,7 +236,7 @@ module HTTP1
     def read_fields(& : String, String -> Bool) : HTTP::Status?
       total = 0
 
-      loop_read_line(max_headers_size, HTTP::Status::REQUEST_HEADER_FIELDS_TOO_LARGE) do |slice|
+      loop_read_line(max_headers_size, HTTP::Status::REQUEST_HEADER_FIELDS_TOO_LARGE, HTTP::Status::BAD_REQUEST) do |slice|
         return if slice.empty?
 
         if (total += slice.size) > max_headers_size
@@ -423,8 +447,8 @@ module HTTP1
       chunk_size = 0
       valid = true
 
-      # chunk-size [ chunk-ext ] [CR] LF
-      read_line(@max_headers_size, nil) do |slice|
+      # chunk-size [ chunk-ext ] CRLF
+      read_line(@max_headers_size, nil, allow_lone_lf: false) do |slice|
         # chunk-size
         slice.bytesize.times do |i|
           byte = slice.to_unsafe[i]
