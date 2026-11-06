@@ -322,6 +322,43 @@ class HTTP1::ConnectionTest < Minitest::Test
     assert_nil c.read_chunk_line
   end
 
+  def test_read_chunk_extensions
+    c = connection(%(a; flag; key = token; quoted="a; b\\"c\\\\d"; empty=""\t;\tmore=\tv\r\n))
+    extensions = [] of {String, String?}
+    assert_equal 10, c.read_chunk_line { |name, value| extensions << {name, value} }
+    assert_equal [
+      {"flag", nil},
+      {"key", "token"},
+      {"quoted", %q(a; b\"c\\d)},
+      {"empty", ""},
+      {"more", "v"},
+    ], extensions
+
+    [
+      ";",
+      "; ",
+      ";\t",
+      "; =",
+      ";=\t",
+      ";=value",
+      ";key=",
+      ";key= ",
+      ";key= \t",
+      ";key=value ",
+      ";key=value\t",
+      ";key value",
+      ";key=two words",
+      ";key=\"unterminated",
+      ";key=\"value\"junk",
+      ";key=\"bad\u0001\"",
+      ";key=\"bad\\\u007f\"",
+      " "
+    ].each do |extension|
+      assert_nil connection("1#{extension}\r\n").read_chunk_line
+      assert_nil connection("1#{extension}\r\n").read_chunk_line { |_, _| }
+    end
+  end
+
   def test_content
     headers = HTTP::Headers.new
     c = connection("")

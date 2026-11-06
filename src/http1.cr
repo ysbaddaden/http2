@@ -400,41 +400,167 @@ module HTTP1
       content
     end
 
-    # Reads chunk-size and skips chunk-ext. Returns nil on error.
+    # Reads chunk-size and skips chunk-ext.
+    # Returns nil on error.
     def read_chunk_line : Int32?
-      size = 0
-      digit = false
+      read_chunk_size do |slice|
+        each_chunk_ext(slice) { }
+      end
+    end
+
+    # Reads chunk-size and yields every chunk-ext pair.
+    # Returns nil on error.
+    def read_chunk_line(& : String, String? ->) : Int32?
+      read_chunk_size do |slice|
+        each_chunk_ext(slice) do |name, val|
+          yield String.new(name), val ? String.new(val) : nil
+        end
+      end
+    end
+
+    private def read_chunk_size(&) : Int32?
+      digits = false
+      chunk_size = 0
+      valid = true
 
       # chunk-size [ chunk-ext ] [CR] LF
       read_line(@max_headers_size, nil) do |slice|
         # chunk-size
-        slice.each do |byte|
+        slice.bytesize.times do |i|
+          byte = slice.to_unsafe[i]
+
           case byte
           when ('0'.ord)..('9'.ord)
-            digit = true
-            size = size * 16 + (byte - '0'.ord)
+            digits = true
+            chunk_size = chunk_size << 4 | (byte &- '0'.ord)
           when ('a'.ord)..('f'.ord)
-            digit = true
-            size = size * 16 + 10 + (byte - 'a'.ord)
+            digits = true
+            chunk_size = chunk_size << 4 | (10 &+ byte &- 'a'.ord)
           when ('A'.ord)..('F'.ord)
-            digit = true
-            size = size * 16 + 10 + (byte - 'A'.ord)
-          when SP, HTAB, ';'
+            digits = true
+            chunk_size = chunk_size << 4 | (10 &+ byte &- 'A'.ord)
+          when ';'.ord, SP, HTAB
+            valid = yield slice[i..]
             break
           else
-            return
+            digits = false
+            break
+          end
+
+          # prevent overflow
+          if chunk_size > Int32::MAX
+            valid = false
+            break
           end
         end
-
-        # skip chunk-ext
       end
 
-      size if digit
+      chunk_size if digits && valid
     end
 
-    # TODO: alt method that parses and yields every chunk-ext [ '=' value ]
-    # def read_chunk_line(& : String, String? ->) : Int32?
-    # end
+    private enum ChunkExtState
+      Separator
+      Name
+      AfterName
+      Value
+    end
+
+    # Parses the chunk-ext part of the chunk-line.
+    # Yields every chunk-ext-name and optional chunk-ext-val as subslices of *slice*.
+    # Returns true if the chunk-ext part is valid, false otherwise.
+    private def each_chunk_ext(slice, &)
+      state : ChunkExtState = :separator
+      name = Bytes.empty
+      bws = false
+
+      # chunk-ext      = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] )
+      # chunk-ext-name = token
+      # chunk-ext-val  = token / quoted-string
+      while byte = slice.first?
+        if byte == SP || byte == HTAB
+          bws = true
+          slice += 1
+          next
+        end
+
+        bws = false
+        consumed = 1
+
+        case state
+        when .separator?
+          if byte == ';'.ord
+            state = :name
+          else
+            return false
+          end
+        when .after_name?
+          if byte == ';'.ord
+            yield name, nil
+            state = :name
+          elsif byte == '='.ord
+            state = :value
+          else
+            return false
+          end
+        when .name?
+          return false unless name = read_token(slice)
+          consumed = name.size
+          state = :after_name
+        when .value?
+          quoted = byte == '"'.ord
+          return false unless value = quoted ? read_quoted_string(slice) : read_token(slice)
+          consumed = value.size + (quoted ? 2 : 0)
+          yield name, value
+          state = :separator
+        end
+
+        slice += consumed
+      end
+
+      if bws || state.name? || state.value?
+        return false
+      end
+
+      if state.after_name?
+        yield name, nil
+      end
+
+      true
+    end
+
+    private def read_token(slice)
+      slice.each_with_index do |byte, index|
+        case byte
+        when '0'.ord..'9'.ord, 'a'.ord..'z'.ord, 'A'.ord..'Z'.ord,
+             '!'.ord, '#'.ord, '$'.ord, '%'.ord, '&'.ord, '\''.ord,
+             '*'.ord, '+'.ord, '-'.ord, '.'.ord, '^'.ord, '_'.ord,
+             '`'.ord, '|'.ord, '~'.ord
+          # valid token byte
+        else
+          return index > 0 ? slice[0, index] : nil
+        end
+      end
+      slice
+    end
+
+    private def read_quoted_string(slice)
+      backslash = false
+
+      slice[1..].each_with_index do |byte, index|
+        case byte
+        when '"'.ord
+          return slice[1..index] unless backslash
+        when '\\'.ord
+          backslash = !backslash
+        when HTAB, SP..('~'.ord), 0x80..
+          backslash = false
+        when '!'.ord, ('#'.ord)..('['.ord), (']'.ord)..('~'.ord)
+          return if backslash
+        else
+          return
+        end
+      end
+    end
 
     def write_request_line(method : String, path : String) : Nil
       @io << method << ' ' << path << ' ' << @version << "\r\n"
