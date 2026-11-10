@@ -255,10 +255,10 @@ module HTTP2
 
         begin
           if stream.data?
-            hpack_decoder.decode(buffer, trailers = HTTP::Headers.new)
+            decode_headers(buffer, trailers = HTTP::Headers.new)
             stream.trailers = trailers
           else
-            hpack_decoder.decode(buffer, stream.headers)
+            decode_headers(buffer, stream.headers)
             if @type.server?
               validate_request_headers(stream.headers)
             else
@@ -281,6 +281,23 @@ module HTTP2
               raise Error.protocol_error("MALFORMED data frame")
             end
           end
+        end
+      end
+    end
+
+    private def decode_headers(buffer, headers : HTTP::Headers)
+      hpack_decoder.decode(buffer, headers)
+
+      if limit = local_settings.max_header_list_size
+        size = 0_u64
+        headers.each do |name, values|
+          values.each do |value|
+            # https://www.rfc-editor.org/rfc/rfc9113.html#section-6.5.2
+            size += name.bytesize.to_u64 + value.bytesize + 32
+          end
+        end
+        if size > limit
+          raise Error.enhance_your_calm("decoded headers exceed MAX_HEADER_LIST_SIZE")
         end
       end
     end
@@ -366,7 +383,7 @@ module HTTP2
         _, promised_stream_id = read_stream_id
         streams.find(promised_stream_id).receiving(frame)
         buffer = read_headers_payload(frame, size - 4)
-        hpack_decoder.decode(buffer, stream.headers)
+        decode_headers(buffer, stream.headers)
       end
     end
 
