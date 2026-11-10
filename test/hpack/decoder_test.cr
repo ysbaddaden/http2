@@ -319,37 +319,62 @@ module HTTP2::HPACK
     # https://github.com/mlalic/hpack-rs/blob/e833ecac324fb9457e04737f482328c3b5cc93fa/src/huffman.rs
 
     def test_huffman_code_single_byte
-      assert_equal "o", HPACK.huffman.decode(slice(0x3f))
-      assert_equal "0", HPACK.huffman.decode(slice(0x07))
-      assert_equal "A", HPACK.huffman.decode(slice(0x87))
+      assert_equal "o", HPACK.huffman_decode(slice(0x3f))
+      assert_equal "0", HPACK.huffman_decode(slice(0x07))
+      assert_equal "A", HPACK.huffman_decode(slice(0x87))
     end
 
     def test_huffman_code_single_char_multiple_byte
-      assert_equal "#", HPACK.huffman.decode(slice(0xff, 0xaf))
-      assert_equal "$", HPACK.huffman.decode(slice(0xff, 0xcf))
-      assert_equal "\n", HPACK.huffman.decode(slice(0xff, 0xff, 0xff, 0xf3))
+      assert_equal "#", HPACK.huffman_decode(slice(0xff, 0xaf))
+      assert_equal "$", HPACK.huffman_decode(slice(0xff, 0xcf))
+      assert_equal "\n", HPACK.huffman_decode(slice(0xff, 0xff, 0xff, 0xf3))
     end
 
     def test_huffman_code_multiple_chars
-      assert_equal "!0", HPACK.huffman.decode(slice(0xfe, 0x01))
-      assert_equal " !", HPACK.huffman.decode(slice(0x53, 0xf8))
+      assert_equal "!0", HPACK.huffman_decode(slice(0xfe, 0x01))
+      assert_equal " !", HPACK.huffman_decode(slice(0x53, 0xf8))
+    end
+
+    def test_huffman_code_all_symbols
+      encoded = (
+        "ffc7fffd8fffffe2fffffe3fffffe4fffffe5fffffe6fffffe7fffffe8ffffeafffffff3fffffa7fffffabffffffdfff" +
+        "ffebfffffecfffffedfffffeefffffefffffff0ffffff1ffffff2fffffffbfffffcffffffd3fffffd7fffffdbfffffdf" +
+        "fffffe3fffffe7fffffebfffffed4fe3f9ffaffcabf1febfafefe7fdfd2cbb00089969b71d79fb9f7fff20ffbff3ff50" +
+        "ddbd7f061c58f265cd9f469d5af66dddbf871e5f9cff7ff7fffc3ff9ffe45fff4719242cb34e6e9d68a6a3d7dac426de" +
+        "fe3cfaf7fffbfe7ffbffdffffffcfffe6ffff4bfff9ffffa3fffd3ffff53fffd5ffffb3fffeb7fffdaffffb7ffff73ff" +
+        "feeffffdeffffebffffbfffffd9ffffdbfffebffffe0ffffeeffffc3ffff8bffff1ffffe4fffee7fffb1ffff97fffd9f" +
+        "fffcdffff9fffffbffffdafffeeffff4ffffb7fffee7fffe8ffffd3fffdeffffd5fffeeffffbdffffe1fffdfffff7fff" +
+        "ff5ffffecffff07fff87fffe0ffff17fffedffff87ffff77fffeffffeaffff8bfffe3ffff93ffff87fffcbffff37ffff" +
+        "1fffff83ffffe1fffebfffe3ffff3fffff2ffffa3ffffd9fffff17ffffc7fffff27ffffdefffffbffffff2fffff8ffff" +
+        "fb7fff97fff8fffffe6fffffc1fffff87ffffe7fffffc5ffffe5fffe4ffff2fffffd1fffff4ffffffefffffe3fffffc9" +
+        "fffff97fffb3ffffcffffb7fffcdffff4ffff9ffffd1ffffcffffeaffffafffffddffffeffffff4fffff5fffffabffff" +
+        "a7ffffd7fffff9bffffecfffffb7fffff3fffffe8fffffd3fffffabfffff5fffffff7ffffecfffffdbfffffbbfffff7f" +
+        "fffff0fffffbbf"
+      ).hexbytes
+      expected = Bytes.new(256) { |i| i.to_u8 }
+
+      assert_equal expected, HPACK.huffman_decode(encoded).to_slice
+      assert_equal encoded, HPACK.huffman_encode(String.new(expected))
     end
 
     def test_eos_is_error
-      assert_raises { HPACK.huffman.decode(slice(0xff, 0xff, 0xff, 0xff)) }
+      assert_raises { HPACK.huffman_decode(slice(0xff, 0xff, 0xff, 0xff)) }
     end
 
-    def test_short_padding
-      assert_equal "o", HPACK.huffman.decode(slice(0x3f))
+    def test_all_padding_lengths
+      1.upto(8) do |count|
+        string = "0" * count
+        assert_equal string, HPACK.huffman_decode(HPACK.huffman_encode(string))
+      end
     end
 
     def test_padding_invalid_too_long
-      assert_raises { HPACK.huffman.decode(slice(0x3f, 0xff)) }
+      assert_raises { HPACK.huffman_decode(slice(0x3f, 0xff)) }
     end
 
     def test_padding_invalid
-      assert_raises { HPACK.huffman.decode(slice(0x3e)) }
-      assert_raises { HPACK.huffman.decode(slice(0xfe, 0x00)) }
+      assert_raises { HPACK.huffman_decode(slice(0x3e)) }
+      assert_raises { HPACK.huffman_decode(slice(0xfe, 0x00)) }
     end
 
     def slice(*bytes)

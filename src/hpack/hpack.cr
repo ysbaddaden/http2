@@ -114,7 +114,7 @@ module HTTP2
         bytes = reader.read(length)
 
         if huffman
-          HPACK.huffman.decode(bytes)
+          HPACK.huffman_decode(bytes)
         else
           String.new(bytes)
         end
@@ -221,13 +221,22 @@ module HTTP2
 
       protected def string(string : String, huffman = false)
         if huffman
-          encoded = HPACK.huffman.encode(string)
-          integer(encoded.size, 7, prefix: 128)
-          writer.write(encoded)
+          buffer = huffman_buffer
+          buffer.clear
+          HPACK.huffman_encode(buffer, string)
+
+          integer(buffer.size, 7, prefix: 128)
+          writer.write(buffer.to_slice)
         else
           integer(string.bytesize, 7)
           writer << string
         end
+      end
+
+      # reusable scratch-pad to reduce reallocations, and
+      # the cost of precomputing the encoded byte size
+      private def huffman_buffer
+        @huffman_buffer ||= IO::Memory.new
       end
     end
   end
