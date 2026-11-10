@@ -126,15 +126,21 @@ module HTTP2
     end
 
     protected def increment_outbound_window_size(increment : Int32) : Nil
+      unless try_increment_outbound_window_size(increment)
+        send_rst_stream(Error::Code::FLOW_CONTROL_ERROR)
+      end
+    end
+
+    protected def try_increment_outbound_window_size(increment : Int32) : Bool
       @mutex.to_reference.synchronize do
         size = @outbound_window_size.to_i64 + increment
         if size <= MAXIMUM_WINDOW_SIZE
           @outbound_window_size = size.to_i32
           @senders.to_reference.broadcast
-          return
+          return true
         end
       end
-      send_rst_stream(Error::Code::FLOW_CONTROL_ERROR)
+      false
     end
 
     protected def send_window_update_frame(increment)
