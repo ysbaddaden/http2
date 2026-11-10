@@ -57,8 +57,8 @@ module HTTP2
     getter state : State
     property priority : Priority
     private getter connection : Connection
-
     @outbound_window_size : Int32
+    protected property? received_headers : Bool = false
 
     # :nodoc:
     protected def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state = State::IDLE)
@@ -82,13 +82,6 @@ module HTTP2
       state == State::OPEN ||
         state == State::HALF_CLOSED_LOCAL ||
         state == State::HALF_CLOSED_REMOTE
-    end
-
-    # Returns true if any DATA was received, false otherwise.
-    #
-    # FIXME: reports `false` if a zero-sized DATA was received.
-    protected def data? : Bool
-      data.size != 0
     end
 
     # Received body.

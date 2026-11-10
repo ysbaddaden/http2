@@ -201,6 +201,60 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_empty frame.stream.data.gets_to_end
   end
 
+  def test_trailers_after_empty_body
+    [nil, Bytes.empty, Bytes[42]].each do |body|
+      encoder = HPACK::Encoder.new(huffman: false)
+      headers = encoder.encode(HTTP::Headers{":status" => "200"})
+      trailers = encoder.encode(HTTP::Headers{"x-trailer" => "value"})
+      io = IO::Memory.new
+      write_frame(io, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, headers)
+      write_frame(io, Frame::Type::DATA, Frame::Flags::None, 2, body) if body
+      write_frame(io, Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 2, trailers)
+      io.rewind
+      connection = Connection.new(io, :client)
+      stream = connection.receive.not_nil!.stream
+      connection.receive if body
+      connection.receive
+
+      assert_equal HTTP::Headers{"x-trailer" => "value"}, stream.trailers?
+      assert_equal HTTP::Headers{":status" => "200"}, stream.headers
+      assert_equal body.try(&.size) || 0, stream.data.gets_to_end.bytesize
+    end
+  end
+
+  def test_informational_response_precedes_final_headers_and_trailers
+    encoder = HPACK::Encoder.new(huffman: false)
+    informational = encoder.encode(HTTP::Headers{":status" => "103", "link" => "</style.css>"})
+    headers = encoder.encode(HTTP::Headers{":status" => "200"})
+    trailers = encoder.encode(HTTP::Headers{"x-trailer" => "value"})
+    connection = new_connection(:client,
+      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, informational},
+      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, headers},
+      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 2, trailers})
+    stream = connection.receive.not_nil!.stream
+    assert_equal "103", stream.headers[":status"]
+    connection.receive
+    assert_equal HTTP::Headers{":status" => "200"}, stream.headers
+    assert_nil stream.trailers?
+    connection.receive
+    assert_equal HTTP::Headers{"x-trailer" => "value"}, stream.trailers?
+  end
+
+  def test_rejects_trailers_without_end_stream_after_empty_body
+    encoder = HPACK::Encoder.new(huffman: false)
+    headers = encoder.encode(HTTP::Headers{":status" => "200"})
+    trailers = encoder.encode(HTTP::Headers{"x-trailer" => "value"})
+    connection = new_connection(:client,
+      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, headers},
+      {Frame::Type::DATA, Frame::Flags::None, 2, Bytes.empty},
+      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, trailers})
+    connection.receive
+    connection.receive
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
+
   def test_saves_reset_stream_error_code_to_frame
     headers_frame = {
       Frame::Type::HEADERS,

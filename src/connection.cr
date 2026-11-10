@@ -247,21 +247,25 @@ module HTTP2
           size -= 5
         end
 
-        if stream.data? && !frame.flags.end_stream?
+        if stream.received_headers? && !frame.flags.end_stream?
           raise Error.protocol_error("INVALID trailer part")
         end
 
         begin
           read_headers_payload(frame, size) do |buffer|
-            if stream.data?
+            if stream.received_headers?
               decode_headers(buffer, trailers = HTTP::Headers.new)
               stream.trailers = trailers
             else
+              stream.headers.clear
               decode_headers(buffer, stream.headers)
               if @type.server?
                 validate_request_headers(stream.headers)
+                stream.received_headers = true
               else
                 validate_response_headers(stream.headers)
+                # informational responses precede the final response headers:
+                stream.received_headers = !stream.headers[":status"]?.try(&.starts_with?('1'))
               end
             end
           end
@@ -270,7 +274,7 @@ module HTTP2
           raise Error.compression_error
         end
 
-        if stream.data? || frame.flags.end_stream?
+        if frame.flags.end_stream?
           # https://tools.ietf.org/html/rfc7540#section-8.1
           # https://tools.ietf.org/html/rfc7230#section-4.1.2
           stream.data.close_write
