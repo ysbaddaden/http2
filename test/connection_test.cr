@@ -2,6 +2,44 @@ require "./test_helper"
 require "../src/http2"
 
 class HTTP2::ConnectionTest < Minitest::Test
+  def test_rejects_oversized_compressed_headers_before_reading_payload
+    io = IO::Memory.new
+    write_frame(io, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, Bytes.new(101))
+    io.rewind
+    connection = Connection.new(io, :client)
+    connection.local_settings.max_header_list_size = 100
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::ENHANCE_YOUR_CALM, error.code
+    assert_equal 9, io.pos
+  end
+
+  def test_rejects_oversized_continuation_before_reading_payload
+    io = IO::Memory.new
+    write_frame(io, Frame::Type::HEADERS, Frame::Flags::None, 2, Bytes.new(60))
+    write_frame(io, Frame::Type::CONTINUATION, Frame::Flags::END_HEADERS, 2, Bytes.new(41))
+    io.rewind
+    connection = Connection.new(io, :client)
+    connection.local_settings.max_header_list_size = 100
+    connection.remote_settings.max_header_list_size = 1000
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::ENHANCE_YOUR_CALM, error.code
+    assert_equal 78, io.pos
+  end
+
+  def test_compressed_headers_at_max_header_list_size
+    # Empty table size updates add compressed bytes without adding header fields.
+    payload = Bytes.new(100, 0x20_u8)
+    payload[99] = 0x88_u8 # :status=200
+    connection = new_connection(:client,
+      {Frame::Type::HEADERS, Frame::Flags::None, 2, payload[0, 60]},
+      {Frame::Type::CONTINUATION, Frame::Flags::END_HEADERS, 2, payload[60, 40]})
+    connection.local_settings.max_header_list_size = 100
+
+    assert_equal "200", connection.receive.not_nil!.stream.headers[":status"]
+  end
+
   def test_decoded_headers_respect_local_max_header_list_size
     headers = HTTP::Headers{":status" => "200", "x-name" => ["é", "é"]}
     payload = HPACK::Encoder.new(huffman: false).encode(headers)

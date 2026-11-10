@@ -352,6 +352,10 @@ module HTTP2
     private def read_headers_payload(frame, size)
       stream = frame.stream
 
+      # Also bound compressed input to limit memory used while collecting continuations.
+      if (limit = local_settings.max_header_list_size) && size > limit
+        raise Error.enhance_your_calm("compressed headers exceed MAX_HEADER_LIST_SIZE")
+      end
       pointer = GC.malloc_atomic(size).as(UInt8*)
       io.read_fully(pointer.to_slice(size))
 
@@ -366,7 +370,9 @@ module HTTP2
           raise Error.protocol_error("EXPECTED continuation frame for stream ##{stream.id} not ##{frame.stream.id}")
         end
 
-        # FIXME: raise if the payload grows too big
+        if (limit = local_settings.max_header_list_size) && size.to_i64 + frame.size > limit
+          raise Error.enhance_your_calm("compressed headers exceed MAX_HEADER_LIST_SIZE")
+        end
         pointer = pointer.realloc(size + frame.size)
         io.read_fully((pointer + size).to_slice(frame.size))
 
