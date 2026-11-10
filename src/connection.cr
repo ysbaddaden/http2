@@ -862,7 +862,10 @@ module HTTP2
         # we can't tell how much of the frame was written: nothing may be
         # written anymore
         @write_failed = true
-        raise ex
+        raise ex if ex.is_a?(IO::Error)
+        # e.g. OpenSSL::SSL::Error once the peer shut TLS down: the callers
+        # handle a failed write as an IO::Error
+        raise IO::Error.new(ex.message, cause: ex)
       end
     end
 

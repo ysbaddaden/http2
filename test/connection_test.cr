@@ -885,6 +885,18 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Stream::State::CLOSED, stream.state
   end
 
+  # A TLS socket raises OpenSSL::SSL::Error once the peer shut TLS down: the
+  # callers of a write, that handle IO::Error, must get one.
+  def test_a_write_failure_of_another_kind_raises_an_io_error
+    output = RaisingWriter.new
+    connection = Connection.new(IO::Stapled.new(IO::Memory.new, output), :server)
+
+    output.error = NotAnIOError.new("protocol is shutdown")
+    error = assert_raises(IO::Error) { connection.write_settings }
+    assert_instance_of NotAnIOError, error.cause
+    assert_equal "protocol is shutdown", error.message
+  end
+
   private class NotAnIOError < Exception
   end
 
