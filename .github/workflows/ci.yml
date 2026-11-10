@@ -16,11 +16,23 @@ on:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # the minimum shard.yml declares, and the latest release; once more
+        # with multi-threaded execution contexts
+        crystal: ["1.19.0", "latest"]
+        crflags: [""]
+        include:
+          - crystal: latest
+            crflags: -Dexecution_context
     steps:
       - uses: actions/checkout@v4
       - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: ${{ matrix.crystal }}
       - run: shards install
-      - run: timeout 5m make test
+      - run: timeout 5m make test CRFLAGS="${{ matrix.crflags }}"
 
   h2spec:
     runs-on: ubuntu-24.04
