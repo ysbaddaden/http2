@@ -437,10 +437,7 @@ module HTTP2
           # adjust windows size for all control-flow streams (doesn't affect
           # the connection window size):
           unless difference == 0
-            streams.each do |stream|
-              next if stream.id == 0
-              stream.increment_outbound_window_size(difference)
-            end
+            streams.increment_outbound_window_size(difference)
           end
         end
       end
@@ -488,6 +485,8 @@ module HTTP2
       raise Error.protocol_error unless MINIMUM_WINDOW_SIZE <= window_size_increment <= MAXIMUM_WINDOW_SIZE
 
       Log.trace { "  WINDOW_SIZE_INCREMENT=#{window_size_increment}" }
+
+      return if stream.state.closed?
 
       if stream.id == 0
         increment_outbound_window_size(window_size_increment)

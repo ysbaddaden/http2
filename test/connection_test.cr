@@ -93,6 +93,102 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Error::Code::ENHANCE_YOUR_CALM, error.code
   end
 
+  def test_settings_window_overflow_removes_streams_during_iteration
+    settings = {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 4, 0, 1, 0, 0]}
+    connection = new_connection(:client, settings)
+
+    overflowing = Array.new(32) do
+      stream = connection.streams.create(state: Stream::State::OPEN)
+      stream.increment_outbound_window_size(MAXIMUM_WINDOW_SIZE - DEFAULT_INITIAL_WINDOW_SIZE)
+      stream
+    end
+    survivor = connection.streams.create(state: Stream::State::OPEN)
+
+    connection.receive
+
+    overflowing.each do |stream|
+      assert_equal Stream::State::CLOSED, stream.state
+      refute connection.streams.has_key?(stream.id)
+    end
+    assert_equal Stream::State::OPEN, survivor.state
+    assert_equal DEFAULT_INITIAL_WINDOW_SIZE + 1, survivor.@outbound_window_size
+  end
+
+  def test_closed_streams_are_removed_on_a_long_lived_connection
+    connection = new_connection(:client)
+
+    100.times do
+      stream = connection.streams.create(state: Stream::State::OPEN)
+      stream.send_rst_stream(Error::Code::CANCEL)
+    end
+    assert_equal 0, connection.streams.size
+
+    assert_equal Stream::State::CLOSED, connection.streams.find(1).state
+    assert_equal 0, connection.streams.size
+  end
+
+  def test_received_reset_removes_stream_without_forgetting_last_remote_id
+    reset = {Frame::Type::RST_STREAM, Frame::Flags::None, 3, Bytes[0, 0, 0, 0]}
+    connection = new_connection(:server, reset, reset)
+    stream = connection.streams.find(3)
+    stream.receiving(Frame.new(Frame::Type::HEADERS, stream))
+
+    assert connection.receive.not_nil!.stream.same?(stream)
+    assert_equal 0, connection.streams.size
+    assert_equal 3, connection.streams.last_stream_id
+    assert_equal Stream::State::CLOSED, connection.receive.not_nil!.stream.state
+    assert_equal 0, connection.streams.size
+  end
+
+  def test_end_stream_in_both_directions_removes_stream
+    data = {Frame::Type::DATA, Frame::Flags::END_STREAM, 1, Bytes[42]}
+
+    connection = new_connection(:client, data)
+    stream = connection.streams.create(state: Stream::State::OPEN)
+    stream.sending(Frame.new(Frame::Type::DATA, stream, Frame::Flags::END_STREAM))
+
+    assert connection.receive.not_nil!.stream.same?(stream)
+    assert_equal 0, connection.streams.size
+    assert_equal "*", stream.data.gets_to_end
+  end
+
+  def test_control_frames_for_implicitly_closed_streams_do_not_retain_streams
+    window_update = {Frame::Type::WINDOW_UPDATE, Frame::Flags::None, 1, Bytes[0, 0, 0, 1]}
+    reset = {Frame::Type::RST_STREAM, Frame::Flags::None, 1, Bytes[0, 0, 0, 0]}
+
+    connection = new_connection(:server, window_update, reset)
+    connection.streams.find(3)
+    connection.local_settings.max_concurrent_streams = 0
+
+    first = connection.receive.not_nil!.stream
+    second = connection.receive.not_nil!.stream
+    assert_equal Stream::State::CLOSED, first.state
+    assert_equal Stream::State::CLOSED, second.state
+    refute first.same?(second)
+  end
+
+  def test_control_frames_on_idle_streams_are_protocol_errors
+    connection = new_connection(:server, {Frame::Type::WINDOW_UPDATE, Frame::Flags::None, 1, Bytes[0, 0, 0, 1]})
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+
+    connection = new_connection(:server, {Frame::Type::RST_STREAM, Frame::Flags::None, 1, Bytes[0, 0, 0, 1]})
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::PROTOCOL_ERROR, error.code
+  end
+
+  def test_window_update_on_closed_local_stream_is_ignored
+    update = {Frame::Type::WINDOW_UPDATE, Frame::Flags::None, 1, Bytes[0x7f, 0xff, 0xff, 0xff]}
+    connection = new_connection(:client, update)
+    stream = connection.streams.create(state: Stream::State::OPEN)
+    stream.sending(Frame.new(Frame::Type::RST_STREAM, stream))
+
+    frame = connection.receive.not_nil!
+    assert_equal Stream::State::CLOSED, frame.stream.state
+    refute frame.stream.same?(stream)
+    assert_equal 0, connection.streams.size
+  end
+
   def test_headers_frame_with_end_stream_closes_the_stream
     headers_frame = {
       Frame::Type::HEADERS,
