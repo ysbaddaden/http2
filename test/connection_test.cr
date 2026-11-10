@@ -2,6 +2,49 @@ require "./test_helper"
 require "../src/http2"
 
 class HTTP2::ConnectionTest < Minitest::Test
+  def test_decoded_headers_respect_local_max_header_list_size
+    headers = HTTP::Headers{":status" => "200", "x-name" => ["é", "é"]}
+    payload = HPACK::Encoder.new(huffman: false).encode(headers)
+    headers_frame = {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, payload}
+
+    # :status=200 (42 bytes), plus two x-name=é fields (40 bytes each).
+    connection = new_connection(:client, headers_frame)
+    connection.local_settings.max_header_list_size = 121
+    connection.remote_settings.max_header_list_size = 1000
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::ENHANCE_YOUR_CALM, error.code
+
+    connection = new_connection(:client, headers_frame)
+    connection.local_settings.max_header_list_size = 122
+    connection.remote_settings.max_header_list_size = 0
+    assert_equal headers, connection.receive.not_nil!.stream.headers
+  end
+
+  def test_decoded_headers_respect_default_max_header_list_size
+    headers = HTTP::Headers{":status" => "200", "x-large" => "a" * 16384}
+    payload = HPACK::Encoder.new(huffman: true).encode(headers)
+    connection = new_connection(:client, {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, payload})
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::ENHANCE_YOUR_CALM, error.code
+  end
+
+  def test_decoded_trailers_respect_max_header_list_size
+    encoder = HPACK::Encoder.new(huffman: true)
+    headers = encoder.encode(HTTP::Headers{":status" => "200"})
+    trailers = encoder.encode(HTTP::Headers{"x-trailer" => "a" * 100})
+
+    connection = new_connection(:client,
+      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, headers},
+      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 2, trailers})
+    connection.local_settings.max_header_list_size = 100
+    connection.receive
+
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::ENHANCE_YOUR_CALM, error.code
+  end
+
   def test_headers_frame_with_end_stream_closes_the_stream
     headers_frame = {
       Frame::Type::HEADERS,
