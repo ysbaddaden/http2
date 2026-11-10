@@ -6,7 +6,7 @@ module HTTP2
     # :nodoc:
     protected def initialize(@connection : Connection, @type : Connection::Type)
       @streams = {} of Int32 => Stream
-      @lock = Sync::RWLock.new(:reentrant)
+      @lock = Sync::RWLock.new
       @highest_remote_id = 0
 
       case @type
@@ -66,11 +66,21 @@ module HTTP2
     end
 
     protected def increment_outbound_window_size(increment : Int32) : Nil
+      overflowing = nil
+
       @lock.write do
         @streams.each do |_, stream|
-          stream.increment_outbound_window_size(increment) unless stream.id == 0
+          next if stream.id == 0
+          unless stream.try_increment_outbound_window_size(increment)
+            (overflowing ||= [] of Stream) << stream
+          end
         end
       end
+
+      # close the overflowing streams after releasing the lock to avoid
+      # deadlocks; a reentrant write lock is insufficient: there could a
+      # concurrent fiber sending an END_STREAM or RST_STREAM frame
+      overflowing.try &.each(&.send_rst_stream(Error::Code::FLOW_CONTROL_ERROR))
     end
 
     protected def delete(stream : Stream) : Nil
