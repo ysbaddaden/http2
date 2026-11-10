@@ -6,7 +6,7 @@ module HTTP2
     # :nodoc:
     protected def initialize(@connection : Connection, @type : Connection::Type)
       @streams = {} of Int32 => Stream
-      @lock = Sync::RWLock.new
+      @lock = Sync::RWLock.new(:reentrant)
       @highest_remote_id = 0
 
       case @type
@@ -17,12 +17,13 @@ module HTTP2
       end
     end
 
-    # Finds an existing stream, silently creating it if it doesn't exist yet.
+    # Finds an existing stream, silently creating a new stream if it doesn't
+    # exist yet. Closed streams are returned without retaining an entry.
     #
-    # Takes care to increment `highest_remote_id` counter for an incoming
-    # stream, unless `consume` is set to false, for example a PRIORITY frame
-    # forward declares a stream priority/dependency but doesn't consume the
-    # stream identifiers, so they are still valid.
+    # Advances `highest_remote_id` for a new incoming stream, unless `consume`
+    # is set to false, for example a PRIORITY frame forward declares a stream
+    # priority/dependency but doesn't consume the stream identifiers, so they
+    # are still valid.
     def find(id : Int32, consume : Bool = true) : Stream
       if @lock.try_lock_read?
         stream = @streams[id]?
@@ -31,37 +32,66 @@ module HTTP2
       end
 
       @lock.write do
-        @streams[id] ||= begin
-          if @type.peer.initiates?(id)
-            if max = @connection.local_settings.max_concurrent_streams
-              if unsafe_active_count(@type.peer) >= max
-                raise Error.refused_stream("MAXIMUM peer-initiated stream capacity reached")
-              end
+        if stream = @streams[id]?
+          return stream
+        end
+
+        # closed identifiers must not become idle streams again (RFC 9113, 5.1.1)
+        if 0 < id <= (@type.peer.initiates?(id) ? @highest_remote_id : @id_counter)
+          return Stream.new(@connection, id, state: Stream::State::CLOSED)
+        end
+
+        # enforce the peer-initiated stream limit
+        if @type.peer.initiates?(id)
+          if max = @connection.local_settings.max_concurrent_streams
+            if unsafe_active_count(@type.peer) >= max
+              raise Error.refused_stream("MAXIMUM peer-initiated stream capacity reached")
             end
           end
+
           if id > @highest_remote_id && consume
             @highest_remote_id = id
           end
-          Stream.new(@connection, id)
         end
+
+        # create new stream
+        @streams[id] = Stream.new(@connection, id)
       end
     end
 
-    protected def each(&)
+    protected def each(&) : Nil
       @lock.read do
         @streams.each { |_, stream| yield stream }
       end
     end
 
-    # Returns true if the incoming *stream_id* is valid for the current
-    # connection.
-    protected def valid?(stream_id : Int32)
-      stream_id == 0 || (                                # stream #0 is always valid, or
-        @type.peer.initiates?(stream_id) && (            # peer owns the stream_id, and
-          @lock.read { @streams[stream_id]? } || # stream already exists, or
-          stream_id >= @highest_remote_id                # stream id grows (can't shrink)
-        )
-      )
+    protected def increment_outbound_window_size(increment : Int32) : Nil
+      @lock.write do
+        @streams.each do |_, stream|
+          stream.increment_outbound_window_size(increment) unless stream.id == 0
+        end
+      end
+    end
+
+    protected def delete(stream : Stream) : Nil
+      @lock.write do
+        @streams.delete(stream.id)
+      end
+    end
+
+    # Checks stream ownership and allocation. Frame validity for the stream's
+    # state is checked separately, including for closed identifiers.
+    protected def valid?(stream_id : Int32) : Bool
+      # stream #0 is always valid
+      return true if stream_id == 0
+
+      # peer owns the stream_id (possibly closed)
+      return true if @type.peer.initiates?(stream_id)
+
+      @lock.read do
+        # already exists, or locally allocated, possibly removed after closing
+        return @streams.has_key?(stream_id) || (@type.initiates?(stream_id) && stream_id <= @id_counter)
+      end
     end
 
     # Creates an outgoing stream. For example to handle a client request or a
@@ -102,9 +132,16 @@ module HTTP2
     end
 
     protected def last_stream_id : Int32
-      @lock.read do
-        @streams.reduce(0) { |a, (k, _)| a > k ? a : k }
-      end
+      @lock.read { @highest_remote_id }
+    end
+
+    protected def has_key?(id : Int32)
+      @streams.has_key?(id)
+    end
+
+    # Number of retained streams, including idle and reserved streams. Informational only.
+    def size : Int32
+      @streams.size
     end
   end
 end

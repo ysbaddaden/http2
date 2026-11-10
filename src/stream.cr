@@ -403,6 +403,7 @@ module HTTP2
 
     private def state=(@state)
       Log.trace { "; Stream is now #{state}" }
+      connection.streams.delete(self) if state.closed?
     end
 
     # :nodoc:
