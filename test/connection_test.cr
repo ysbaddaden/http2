@@ -2,6 +2,16 @@ require "./test_helper"
 require "../src/http2"
 
 class HTTP2::ConnectionTest < Minitest::Test
+  def test_end_headers_payload_excludes_priority_padding_and_next_frame
+    connection = new_connection(:client,
+      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::PADDED | Frame::Flags::PRIORITY,
+       2, Bytes[2, 0, 0, 0, 0, 0, 0x88, 0, 0]},
+      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 4, Bytes[0x89]})
+
+    assert_equal "200", connection.receive.not_nil!.stream.headers[":status"]
+    assert_equal "204", connection.receive.not_nil!.stream.headers[":status"]
+  end
+
   def test_rejects_oversized_compressed_headers_before_reading_payload
     io = IO::Memory.new
     write_frame(io, Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, Bytes.new(101))

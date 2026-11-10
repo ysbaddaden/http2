@@ -251,18 +251,18 @@ module HTTP2
           raise Error.protocol_error("INVALID trailer part")
         end
 
-        buffer = read_headers_payload(frame, size)
-
         begin
-          if stream.data?
-            decode_headers(buffer, trailers = HTTP::Headers.new)
-            stream.trailers = trailers
-          else
-            decode_headers(buffer, stream.headers)
-            if @type.server?
-              validate_request_headers(stream.headers)
+          read_headers_payload(frame, size) do |buffer|
+            if stream.data?
+              decode_headers(buffer, trailers = HTTP::Headers.new)
+              stream.trailers = trailers
             else
-              validate_response_headers(stream.headers)
+              decode_headers(buffer, stream.headers)
+              if @type.server?
+                validate_request_headers(stream.headers)
+              else
+                validate_response_headers(stream.headers)
+              end
             end
           end
         rescue ex : HPACK::Error
@@ -346,23 +346,29 @@ module HTTP2
       end
     end
 
-    # OPTIMIZE: consider CircularBuffer and decompressing HPACK headers
-    # in-parallel instead of reallocating pointers and eventually
-    # decompressing everything
-    private def read_headers_payload(frame, size)
+    private def read_headers_payload(frame, size, &)
       stream = frame.stream
 
-      # Also bound compressed input to limit memory used while collecting continuations.
+      # bound compressed input to limit memory while collecting CONTINUATION frames
       if (limit = local_settings.max_header_list_size) && size > limit
         raise Error.enhance_your_calm("compressed headers exceed MAX_HEADER_LIST_SIZE")
       end
+
+      # fast-path: decode from payload (no CONTINUATION frame)
+      if frame.flags.end_headers? && (payload = io.peek) && payload.size >= size
+        # Decode before advancing the IO, which may invalidate the borrowed slice.
+        yield payload[0, size]
+        io.skip(size)
+        return
+      end
+
+      # slow-path: buffer compressed headers
       pointer = GC.malloc_atomic(size).as(UInt8*)
       io.read_fully(pointer.to_slice(size))
 
-      loop do
-        break if frame.flags.end_headers?
-
+      until frame.flags.end_headers?
         frame = read_frame_header
+
         unless frame.type == Frame::Type::CONTINUATION
           raise Error.protocol_error("EXPECTED continuation frame")
         end
@@ -373,13 +379,13 @@ module HTTP2
         if (limit = local_settings.max_header_list_size) && size.to_i64 + frame.size > limit
           raise Error.enhance_your_calm("compressed headers exceed MAX_HEADER_LIST_SIZE")
         end
+
         pointer = pointer.realloc(size + frame.size)
         io.read_fully((pointer + size).to_slice(frame.size))
-
         size += frame.size
       end
 
-      pointer.to_slice(size)
+      yield pointer.to_slice(size)
     end
 
     private def read_push_promise_frame(frame)
@@ -388,8 +394,9 @@ module HTTP2
       read_padded(frame) do |size|
         _, promised_stream_id = read_stream_id
         streams.find(promised_stream_id).receiving(frame)
-        buffer = read_headers_payload(frame, size - 4)
-        decode_headers(buffer, stream.headers)
+        read_headers_payload(frame, size - 4) do |buffer|
+          decode_headers(buffer, stream.headers)
+        end
       end
     end
 
