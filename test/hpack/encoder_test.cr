@@ -7,6 +7,34 @@ module HTTP2::HPACK
       @e ||= Encoder.new
     end
 
+    def test_huffman_code_empty_string
+      assert_empty HPACK.huffman_encode("")
+    end
+
+    def test_huffman_code_expands_input
+      assert_equal slice(0xff, 0xc7), HPACK.huffman_encode("\0")
+      assert_equal slice(0xff, 0xff, 0xff, 0xf3), HPACK.huffman_encode("\n")
+    end
+
+    def test_huffman_code_writes_to_io
+      io = IO::Memory.new
+      io << "prefix"
+      HPACK.huffman_encode(io, "0")
+      HPACK.huffman_encode(io, "\0")
+      HPACK.huffman_encode(io, "")
+      assert_equal Bytes.literal(0x70, 0x72, 0x65, 0x66, 0x69, 0x78, 0x07, 0xff, 0xc7), io.to_slice
+    end
+
+    def test_reuses_huffman_buffer
+      encoder = Encoder.new(huffman: true)
+      decoder = Decoder.new
+
+      ["a" * 4096, "b", ""].each do |value|
+        headers = HTTP::Headers{"x-value" => value}
+        assert_equal headers, decoder.decode(encoder.encode(headers))
+      end
+    end
+
     # http://tools.ietf.org/html/rfc7541#appendix-C.2.1
     def test_literal_header_with_indexing
       headers = HTTP::Headers{"custom-key" => "custom-header"}
