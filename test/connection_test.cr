@@ -227,17 +227,24 @@ class HTTP2::ConnectionTest < Minitest::Test
     informational = encoder.encode(HTTP::Headers{":status" => "103", "link" => "</style.css>"})
     headers = encoder.encode(HTTP::Headers{":status" => "200"})
     trailers = encoder.encode(HTTP::Headers{"x-trailer" => "value"})
-    connection = new_connection(:client,
-      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, informational},
-      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, 2, headers},
-      {Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, 2, trailers})
-    stream = connection.receive.not_nil!.stream
-    assert_equal "103", stream.headers[":status"]
-    connection.receive
-    assert_equal HTTP::Headers{":status" => "200"}, stream.headers
-    assert_nil stream.trailers?
-    connection.receive
-    assert_equal HTTP::Headers{"x-trailer" => "value"}, stream.trailers?
+
+    [1, 2].each do |stream_id|
+      connection = new_connection(:client,
+        {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, stream_id, informational},
+        {Frame::Type::HEADERS, Frame::Flags::END_HEADERS, stream_id, headers},
+        {Frame::Type::HEADERS, Frame::Flags::END_HEADERS | Frame::Flags::END_STREAM, stream_id, trailers})
+      connection.streams.create if stream_id.odd?
+
+      stream = connection.receive.not_nil!.stream
+      assert_equal "103", stream.headers[":status"]
+
+      connection.receive
+      assert_equal HTTP::Headers{":status" => "200"}, stream.headers
+      assert_nil stream.trailers?
+
+      connection.receive
+      assert_equal HTTP::Headers{"x-trailer" => "value"}, stream.trailers?
+    end
   end
 
   def test_rejects_trailers_without_end_stream_after_empty_body

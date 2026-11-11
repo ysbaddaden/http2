@@ -58,7 +58,6 @@ module HTTP2
     property priority : Priority
     private getter connection : Connection
     @outbound_window_size : Int32
-    protected property? received_headers : Bool = false
 
     # :nodoc:
     protected def initialize(@connection, @id, @priority = DEFAULT_PRIORITY.dup, @state = State::IDLE)
@@ -82,6 +81,12 @@ module HTTP2
       state == State::OPEN ||
         state == State::HALF_CLOSED_LOCAL ||
         state == State::HALF_CLOSED_REMOTE
+    end
+
+    # Returns true if headers have already been received and aren't an
+    # informational response — precedes the final response headers.
+    def received_final_headers? : Bool
+      !@headers.empty? && !@headers[":status"]?.try(&.starts_with?('1'))
     end
 
     # Received body.
