@@ -326,4 +326,24 @@ class HTTP2::ConnectionTest < Minitest::Test
     error = assert_raises(Error) { connection.receive }
     assert_equal Error::Code::REFUSED_STREAM, error.code
   end
+
+  def test_client_replenishes_connection_window_for_its_own_streams
+    data = {Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(DEFAULT_MAX_FRAME_SIZE)}
+    input = IO::Memory.new
+    3.times { write_frame(input, *data) }
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    connection.streams.create(state: Stream::State::OPEN)
+
+    # the third frame drops the connection window below half its initial size
+    3.times { connection.receive }
+
+    output.rewind
+    header = output.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+    assert_equal Frame::Type::WINDOW_UPDATE.to_u8, header & 0xff
+    output.read_byte # flags
+    assert_equal 0, output.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+    assert_equal DEFAULT_INITIAL_WINDOW_SIZE, output.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+  end
 end
