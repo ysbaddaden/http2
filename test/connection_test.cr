@@ -93,6 +93,22 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Error::Code::ENHANCE_YOUR_CALM, error.code
   end
 
+  def test_maximum_initial_window_size
+    connection = new_connection(:client, {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 4, 0x7f, 0xff, 0xff, 0xff]})
+    connection.receive
+    assert_equal MAXIMUM_WINDOW_SIZE, connection.remote_settings.initial_window_size
+
+    connection = new_connection(:client, {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 4, 0x80, 0, 0, 0]})
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::FLOW_CONTROL_ERROR, error.code
+  end
+
+  def test_accepts_maximum_frame_size
+    connection = new_connection(:client, {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 5, 0, 0xff, 0xff, 0xff]})
+    connection.receive
+    assert_equal MAXIMUM_FRAME_SIZE, connection.remote_settings.max_frame_size
+  end
+
   def test_settings_window_overflow_removes_streams_during_iteration
     settings = {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 4, 0, 1, 0, 0]}
     connection = new_connection(:client, settings)
