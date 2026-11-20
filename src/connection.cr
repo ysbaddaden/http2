@@ -65,12 +65,12 @@ module HTTP2
       @closed = false
 
       @hpack_encoder = HPACK::Encoder.new(
-        max_table_size: local_settings.header_table_size,
+        max_table_size: remote_settings.header_table_size,
         indexing: HPACK::Indexing::NONE,
         huffman: true
       )
       @hpack_decoder = HPACK::Decoder.new(
-        max_table_size: remote_settings.header_table_size
+        max_table_size: local_settings.header_table_size
       )
 
       @inbound_window_size = DEFAULT_INITIAL_WINDOW_SIZE
@@ -197,7 +197,7 @@ module HTTP2
       flags = Frame::Flags.new(read_byte)
       _, stream_id = read_stream_id
 
-      if size > remote_settings.max_frame_size
+      if size > local_settings.max_frame_size
         raise Error.frame_size_error
       end
 
@@ -429,9 +429,6 @@ module HTTP2
         Log.trace { "  #{id}=#{value}" }
 
         case id
-        when Settings::Identifier::HEADER_TABLE_SIZE
-          hpack_decoder.max_table_size = value.to_i32
-
         when Settings::Identifier::INITIAL_WINDOW_SIZE
           difference = value.to_i32 - remote_settings.initial_window_size
 
@@ -566,7 +563,9 @@ module HTTP2
 
       # if @inbound_window_size <= 0
       if @inbound_window_size < (initial_window_size // 2)
-        increment = Math.min(initial_window_size * streams.active_count(@type.peer), MAXIMUM_WINDOW_SIZE)
+        # DATA arrives on streams initiated by either side
+        active = streams.active_count(@type) + streams.active_count(@type.peer)
+        increment = Math.min(initial_window_size * Math.max(active, 1), MAXIMUM_WINDOW_SIZE)
         @inbound_window_size += increment
         streams.find(0).send_window_update_frame(increment)
       end

@@ -93,6 +93,22 @@ class HTTP2::ConnectionTest < Minitest::Test
     assert_equal Error::Code::ENHANCE_YOUR_CALM, error.code
   end
 
+  def test_maximum_initial_window_size
+    connection = new_connection(:client, {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 4, 0x7f, 0xff, 0xff, 0xff]})
+    connection.receive
+    assert_equal MAXIMUM_WINDOW_SIZE, connection.remote_settings.initial_window_size
+
+    connection = new_connection(:client, {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 4, 0x80, 0, 0, 0]})
+    error = assert_raises(Error) { connection.receive }
+    assert_equal Error::Code::FLOW_CONTROL_ERROR, error.code
+  end
+
+  def test_accepts_maximum_frame_size
+    connection = new_connection(:client, {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 5, 0, 0xff, 0xff, 0xff]})
+    connection.receive
+    assert_equal MAXIMUM_FRAME_SIZE, connection.remote_settings.max_frame_size
+  end
+
   def test_settings_window_overflow_removes_streams_during_iteration
     settings = {Frame::Type::SETTINGS, Frame::Flags::None, 0, Bytes[0, 4, 0, 1, 0, 0]}
     connection = new_connection(:client, settings)
@@ -325,5 +341,25 @@ class HTTP2::ConnectionTest < Minitest::Test
 
     error = assert_raises(Error) { connection.receive }
     assert_equal Error::Code::REFUSED_STREAM, error.code
+  end
+
+  def test_client_replenishes_connection_window_for_its_own_streams
+    data = {Frame::Type::DATA, Frame::Flags::None, 1, Bytes.new(DEFAULT_MAX_FRAME_SIZE)}
+    input = IO::Memory.new
+    3.times { write_frame(input, *data) }
+    input.rewind
+    output = IO::Memory.new
+    connection = Connection.new(IO::Stapled.new(input, output), :client)
+    connection.streams.create(state: Stream::State::OPEN)
+
+    # the third frame drops the connection window below half its initial size
+    3.times { connection.receive }
+
+    output.rewind
+    header = output.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+    assert_equal Frame::Type::WINDOW_UPDATE.to_u8, header & 0xff
+    output.read_byte # flags
+    assert_equal 0, output.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+    assert_equal DEFAULT_INITIAL_WINDOW_SIZE, output.read_bytes(UInt32, IO::ByteFormat::BigEndian)
   end
 end
